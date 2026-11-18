@@ -22,7 +22,7 @@ import javax.mail.search.SearchTerm
  * payment / ride / food / travel senders. Nothing is sent anywhere; mails are parsed on the phone.
  */
 object MailSync {
-    private val bankKeys = listOf("icici", "hdfc", "sbi", "axisbank", "kotak", "paytm", "phonepe", "idfc", "yesbank", "pnb")
+    private val bankKeys = listOf("ubi.bank", "unionbank", "icici", "hdfc", "sbi", "axisbank", "kotak", "paytm", "phonepe", "idfc", "yesbank", "pnb")
     private val merchantKeys = listOf(
         "rapido", "uber", "olacabs", "swiggy", "zomato", "irctc", "blinkit", "zepto",
         "amazon", "flipkart", "bigbasket"
@@ -51,26 +51,47 @@ object MailSync {
     fun sync(email: String, pass: String, days: Int): Int {
         val store = connect(email, pass)
         try {
-            val folder = store.getFolder("INBOX")
-            folder.open(Folder.READ_ONLY)
             val since = Date(System.currentTimeMillis() - days * 24L * 60 * 60 * 1000)
             val senderTerms: Array<SearchTerm> =
                 (bankKeys + merchantKeys).map { FromStringTerm(it) as SearchTerm }.toTypedArray()
             val term = AndTerm(ReceivedDateTerm(ComparisonTerm.GE, since), OrTerm(senderTerms))
-            val msgs = folder.search(term)
             var added = 0
-            for (m in msgs.takeLast(150)) {
+            // "All Mail" covers inbox + archived; Trash is separate in Gmail. Many bank alerts get auto-trashed.
+            for (folder in folders(store)) {
                 try {
-                    if (handle(m)) added++
+                    folder.open(Folder.READ_ONLY)
+                    val msgs = folder.search(term)
+                    for (m in msgs.takeLast(200)) {
+                        try {
+                            if (handle(m)) added++
+                        } catch (e: Exception) {
+                            // skip a single unreadable mail
+                        }
+                    }
+                    folder.close(false)
                 } catch (e: Exception) {
-                    // skip a single unreadable mail
+                    // skip a folder we cannot open
                 }
             }
-            folder.close(false)
             return added
         } finally {
             try { store.close() } catch (e: Exception) { }
         }
+    }
+
+    private fun folders(store: javax.mail.Store): List<Folder> {
+        val out = mutableListOf<Folder>()
+        try {
+            for (f in store.defaultFolder.list("*")) {
+                val attrs = (f as? com.sun.mail.imap.IMAPFolder)?.attributes ?: continue
+                if (attrs.any { it.equals("\\All", true) || it.equals("\\Trash", true) }) out.add(f)
+            }
+        } catch (e: Exception) {
+        }
+        if (out.none { f -> (f as? com.sun.mail.imap.IMAPFolder)?.attributes?.any { it.equals("\\All", true) } == true }) {
+            out.add(0, store.getFolder("INBOX"))
+        }
+        return out
     }
 
     private fun handle(m: Message): Boolean {
@@ -81,7 +102,8 @@ object MailSync {
         val text = textOf(m).replace(Regex("\\s+"), " ").trim()
         val f = from.lowercase()
         val t = if (bankKeys.any { f.contains(it) }) {
-            SmsParser.parse(from, text, ts, "email", idKey)
+            SmsParser.parseAlertMail(from, subj, text, ts, idKey)
+                ?: SmsParser.parse(from, text, ts, "email", idKey)
         } else {
             SmsParser.parseReceipt(from, subj, text, ts, idKey)
         }

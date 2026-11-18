@@ -47,7 +47,7 @@ object SmsParser {
     )
     private val axisUpi = Regex("UPI/P2[AM]/[0-9]+/([A-Za-z][A-Za-z0-9 ]{1,28})", RegexOption.IGNORE_CASE)
     private val fvField = Regex("\\bFv\\.\\s*([A-Za-z][A-Za-z0-9 .&_-]{0,28}?)\\s*(?:,|$)", RegexOption.IGNORE_CASE)
-    private val refField = Regex("(?:UPI|IMPS|NEFT|RTGS|MB|Ref(?:\\s*No)?\\.?)[-/:# ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
+    private val refField = Regex("(?:UPI|IMPS|NEFT|RTGS|MB|RRN|Ref(?:\\s*No)?\\.?)[-/:# ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
 
     /** Parses a bank debit alert (SMS body or alert-email text). Returns null if it is not a debit. */
     fun parse(sender: String, body: String, ts: Long, src: String = "sms", idKey: String? = null): Txn? {
@@ -103,12 +103,34 @@ object SmsParser {
     private fun cleanSender(s: String): String {
         val core = s.replace(Regex("^[A-Z]{2}-"), "").replace(Regex("-[A-Z]$"), "")
         return when {
-            core.contains("UNION", true) -> "Union Bank (naam nahi)"
+            core.contains("UNION", true) || core.contains("ubi.bank", true) -> "Union Bank (naam nahi)"
             core.contains("ICICI", true) -> "ICICI (naam nahi)"
             core.contains("SBI", true) -> "SBI (naam nahi)"
             core.contains("HDFC", true) -> "HDFC (naam nahi)"
             else -> core
         }
+    }
+
+    private val fieldAmount = Regex("Amount\\s*:\\s*(?:rs\\.?|inr|₹)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)", RegexOption.IGNORE_CASE)
+    private val fieldPayee = Regex("Payee\\s*Name\\s*:\\s*(.+?)\\s+(?:[0-9]+\\.|Amount)", RegexOption.IGNORE_CASE)
+
+    /**
+     * Table-style bank alert mails, e.g. Union Bank "DEBIT TRANSACTION ALERT":
+     * "1. Payee Name : SHIVANCH 2. Amount : Rs. 1500.00 ... Transaction ID/RRN : 2405... Status : Success".
+     */
+    fun parseAlertMail(from: String, subject: String, text: String, ts: Long, idKey: String): Txn? {
+        val subj = subject.lowercase()
+        if (!subj.contains("debit") || subj.contains("credit")) return null
+        val low = text.lowercase()
+        if (Regex("status\\s*:\\s*(?:fail|declin|reject|pending)").containsMatchIn(low)) return null
+        val amt = fieldAmount.find(text)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull() ?: return null
+        if (amt <= 0) return null
+        var payee = fieldPayee.find(text)?.groupValues?.get(1)?.trim().orEmpty()
+        if (payee.isBlank()) payee = cleanSender(from)
+        if (payee.length > 30) payee = payee.substring(0, 30)
+        val ref = refField.find(text)?.groupValues?.get(1).orEmpty()
+        val cat = guessCat(payee.lowercase())
+        return Txn("email:$idKey", ts, amt, payee, cat.id, cat.kind, "email", false, ref)
     }
 
     private val brands = mapOf(
