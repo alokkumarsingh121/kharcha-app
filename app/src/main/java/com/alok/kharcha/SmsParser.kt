@@ -18,7 +18,7 @@ object SmsParser {
     // Clear signs of money going out: debited, spent, sent Rs, Dr. from, transferred, trf to...
     private val strongDebit = Regex(
         "debited|\\bdebit\\b|\\bspent\\b|\\bsent\\s*(?:rs|inr|₹)|withdrawn|transferred|\\btrf\\b|" +
-            "\\bdr\\.?\\s+(?:from|to|a/c|ac)|deducted|paid\\s+to|\\bpaid\\b|transfer\\s+to",
+            "\\bdr\\.?\\s*(?:from|to|a/c|ac|rs|inr|₹)|deducted|paid\\s+to|\\bpaid\\b|transfer\\s+to",
         RegexOption.IGNORE_CASE
     )
     private val weakDebitWords = listOf(
@@ -46,7 +46,8 @@ object SmsParser {
         RegexOption.IGNORE_CASE
     )
     private val axisUpi = Regex("UPI/P2[AM]/[0-9]+/([A-Za-z][A-Za-z0-9 ]{1,28})", RegexOption.IGNORE_CASE)
-    private val refField = Regex("(?:UPI|IMPS|NEFT|RTGS|Ref(?:\\s*No)?\\.?)[-/:# ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
+    private val fvField = Regex("\\bFv\\.\\s*([A-Za-z][A-Za-z0-9 .&_-]{0,28}?)\\s*(?:,|$)", RegexOption.IGNORE_CASE)
+    private val refField = Regex("(?:UPI|IMPS|NEFT|RTGS|MB|Ref(?:\\s*No)?\\.?)[-/:# ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
 
     /** Parses a bank debit alert (SMS body or alert-email text). Returns null if it is not a debit. */
     fun parse(sender: String, body: String, ts: Long, src: String = "sms", idKey: String? = null): Txn? {
@@ -68,6 +69,7 @@ object SmsParser {
 
         // Structured fields (Info:, UPI/..., UPI-ref-name) already hold a clean name.
         var merchant: String = infoField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
+        if (merchant.isBlank()) merchant = fvField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
         if (merchant.isBlank()) {
             val a = axisUpi.find(text)?.groupValues?.get(1).orEmpty()
             merchant = (" $a").replace(tailCut, "").trim()
@@ -80,7 +82,7 @@ object SmsParser {
             merchant = (" " + raw.replace(prefixJunk, "")).replace(tailCut, "").trim().trimEnd('.', '-', ' ')
         }
         if (merchant.isNotEmpty() && merchant.all { it.isDigit() || it == ' ' }) merchant = ""
-        if (merchant.isBlank()) merchant = sender
+        if (merchant.isBlank()) merchant = cleanSender(sender)
         if (merchant.length > 30) merchant = merchant.substring(0, 30)
 
         val ref = refField.find(text)?.groupValues?.get(1).orEmpty()
@@ -96,6 +98,17 @@ object SmsParser {
             confirmed = false,
             ref = ref
         )
+    }
+
+    private fun cleanSender(s: String): String {
+        val core = s.replace(Regex("^[A-Z]{2}-"), "").replace(Regex("-[A-Z]$"), "")
+        return when {
+            core.contains("UNION", true) -> "Union Bank (naam nahi)"
+            core.contains("ICICI", true) -> "ICICI (naam nahi)"
+            core.contains("SBI", true) -> "SBI (naam nahi)"
+            core.contains("HDFC", true) -> "HDFC (naam nahi)"
+            else -> core
+        }
     }
 
     private val brands = mapOf(

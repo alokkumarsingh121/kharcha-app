@@ -590,7 +590,8 @@ class MainActivity : Activity() {
         val outHints = listOf("debit", "sent", "paid", "dr.", "dr ", "trf", "transfer", "withdraw", "spent", "txn", "transaction", "upi", "imps", "neft")
         val junk = listOf(
             "recharge", "validity", "plan", "expire", "offer", "click", "http", "www.", "apply", "loan",
-            "cashback", "reward", "discount", "pre-approved", "kyc", "activate", "pack", "data ", "otp", "credited"
+            "cashback", "reward", "discount", "pre-approved", "kyc", "activate", "pack", "data ", "otp", "credited",
+            "declined", "failed", "reversed", "trade confirmation", "trade bal", "bit.ly"
         )
         var total = 0
         var read = 0
