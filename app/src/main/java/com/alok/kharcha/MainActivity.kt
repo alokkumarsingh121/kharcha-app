@@ -158,7 +158,7 @@ class MainActivity : Activity() {
     private fun scanInbox() {
         if (!hasSmsPermission()) return
         try {
-            val since = System.currentTimeMillis() - 30L * DAY_MS
+            val since = System.currentTimeMillis() - 90L * DAY_MS
             val cur = contentResolver.query(
                 Uri.parse("content://sms/inbox"),
                 arrayOf("address", "body", "date"),
@@ -213,6 +213,10 @@ class MainActivity : Activity() {
             mailRow.addView(pill("🔄 Sync", blue) { syncMail(true); render() })
         }
         root.addView(mailRow)
+        val missed = tv("🔍 Jo SMS kharche ki tarah nahi padhe gaye, unhe dekho", 12f, true, blue)
+        missed.setPadding(0, dp(8), 0, 0)
+        missed.setOnClickListener { missedDialog() }
+        root.addView(missed)
         root.addView(gap(10))
 
         // day navigation
@@ -571,6 +575,43 @@ class MainActivity : Activity() {
             }
         }
         b.show()
+    }
+
+    private fun missedDialog() {
+        if (!hasSmsPermission()) {
+            Toast.makeText(this, "Pehle SMS permission do", Toast.LENGTH_LONG).show()
+            return
+        }
+        val money = Regex("(?:rs\\.?|inr|₹)\\s*[:\\-]?\\s*[0-9]", RegexOption.IGNORE_CASE)
+        val out = StringBuilder()
+        var n = 0
+        try {
+            val cur = contentResolver.query(
+                Uri.parse("content://sms/inbox"),
+                arrayOf("address", "body", "date"),
+                "date>?", arrayOf((System.currentTimeMillis() - 60L * DAY_MS).toString()), "date DESC"
+            )
+            cur?.use {
+                while (it.moveToNext() && n < 15) {
+                    val addr = it.getString(0) ?: ""
+                    val body = it.getString(1) ?: continue
+                    val low = body.lowercase()
+                    if (!money.containsMatchIn(body)) continue
+                    if (SmsParser.parse(addr, body, it.getLong(2)) != null) continue
+                    val outgoing = listOf("debit", "sent", "paid", "dr", "trf", "transfer", "withdraw", "spent")
+                    if (low.contains("credited") && outgoing.none { w -> low.contains(w) }) continue
+                    n++
+                    out.append("• ").append(addr).append(": ").append(body.replace('\n', ' ').take(170)).append("\n\n")
+                }
+            }
+        } catch (e: Exception) {
+            out.append("SMS padh nahi paya: ").append(e.message)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Ye SMS kharche ki tarah nahi padhe gaye")
+            .setMessage(if (n == 0 && out.isEmpty()) "Koi chhuta hua SMS nahi mila." else out.toString())
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     // ---------- dialogs ----------

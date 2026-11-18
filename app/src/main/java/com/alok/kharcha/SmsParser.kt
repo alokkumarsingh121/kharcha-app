@@ -2,42 +2,63 @@ package com.alok.kharcha
 
 object SmsParser {
 
+    // Messages that are not completed debits.
     private val skipWords = listOf(
-        "otp", "one time password", "will be debited", "due on", "is due", "failed",
-        "declined", "reversed", "requested", "collect request", "unsuccessful"
+        "will be debited", "due on", "is due", "failed", "declined", "reversed",
+        "requested", "collect request", "unsuccessful", "insufficient"
     )
-    private val debitWords = listOf(
-        "debited", "spent", "paid", "sent rs", "sent inr", "withdrawn",
-        "used for a transaction", "purchase of", "txn of"
+
+    // A real OTP message (code next to the word OTP). Bank debit alerts often only carry a
+    // "never share OTP" warning, so the word OTP alone must not reject a message.
+    private val otpMsg = Regex(
+        "\\botp\\b[^.]{0,25}\\b[0-9]{4,8}\\b|\\b[0-9]{4,8}\\b[^.]{0,25}\\botp\\b|one[- ]time password",
+        RegexOption.IGNORE_CASE
+    )
+
+    // Clear signs of money going out: debited, spent, sent Rs, Dr. from, transferred, trf to...
+    private val strongDebit = Regex(
+        "debited|\\bdebit\\b|\\bspent\\b|\\bsent\\s*(?:rs|inr|₹)|withdrawn|transferred|\\btrf\\b|" +
+            "\\bdr\\.?\\s+(?:from|to|a/c|ac)|deducted|paid\\s+to|\\bpaid\\b|transfer\\s+to",
+        RegexOption.IGNORE_CASE
+    )
+    private val weakDebitWords = listOf(
+        "used for a transaction", "purchase of", "txn of", "payment of rs", "payment of inr"
     )
     private val creditWords = listOf("credited", "received", "refund", "deposited")
 
+    private const val CUR = "(?:rs\\.?|inr|₹)\\s*[:\\-]?\\s*"
+    private const val NUM = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)"
+
     private val debitAmount = Regex(
-        "(?:debited|spent|paid|withdrawn|sent)\\s*(?:by|for|with|of)?\\s*(?:rs\\.?|inr|₹)?\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)",
+        "(?:debited|debit|spent|paid|withdrawn|sent|transferred|deducted)\\s*(?:by|for|with|of)?\\s*(?:$CUR)?$NUM",
         RegexOption.IGNORE_CASE
     )
-    private val anyAmount = Regex(
-        "(?:rs\\.?|inr|₹)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)",
-        RegexOption.IGNORE_CASE
-    )
+    private val anyAmount = Regex(CUR + NUM, RegexOption.IGNORE_CASE)
     private val infoField = Regex(
         "Info:\\s*(.+?)(?:\\.\\s+(?:The|Avl|Available|If|Not)|\\s*$)",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
     )
     private val upiName = Regex("(?:UPI|IMPS)[-/ ]*[0-9]{9,16}[-/ ]*([A-Za-z][A-Za-z0-9 &_-]{1,28})", RegexOption.IGNORE_CASE)
-    private val toField = Regex("\\b(?:to|at)\\s+([A-Za-z0-9][A-Za-z0-9 .&@_-]{1,28})", RegexOption.IGNORE_CASE)
-    private val prefixJunk = Regex("^(?:UPI|IMPS|NEFT|POS|ECOM|VPA)[-/ ]*[0-9]*[-/ ]*", RegexOption.IGNORE_CASE)
-    private val refField = Regex("(?:UPI|IMPS|NEFT)[-/ ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
+    private val toField = Regex("\\b(?:to|at)\\s+([A-Za-z0-9][A-Za-z0-9 .&@_-]{1,34})", RegexOption.IGNORE_CASE)
+    private val prefixJunk = Regex("^(?:UPI|IMPS|NEFT|RTGS|POS|ECOM|VPA)[-/ ]*[0-9]*[-/ ]*", RegexOption.IGNORE_CASE)
+    private val tailCut = Regex(
+        "\\s+(?:on|ref|refno|ref\\.|upi|imps|neft|rtgs|via|dt|date|a/c|ac|trf|if|not|call|never|do|avl|available|bal|sms|dial|fwd|your|account)\\b.*$",
+        RegexOption.IGNORE_CASE
+    )
+    private val axisUpi = Regex("UPI/P2[AM]/[0-9]+/([A-Za-z][A-Za-z0-9 ]{1,28})", RegexOption.IGNORE_CASE)
+    private val refField = Regex("(?:UPI|IMPS|NEFT|RTGS|Ref(?:\\s*No)?\\.?)[-/:# ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
 
     /** Parses a bank debit alert (SMS body or alert-email text). Returns null if it is not a debit. */
     fun parse(sender: String, body: String, ts: Long, src: String = "sms", idKey: String? = null): Txn? {
         val text = body.replace('\n', ' ').trim()
         val low = text.lowercase()
         if (skipWords.any { low.contains(it) }) return null
-        val isDebit = debitWords.any { low.contains(it) }
-        val isCredit = creditWords.any { low.contains(it) }
+        val strong = strongDebit.containsMatchIn(text)
+        if (!strong && otpMsg.containsMatchIn(text)) return null
+        val isDebit = strong || weakDebitWords.any { low.contains(it) }
         if (!isDebit) return null
-        if (isCredit && !low.contains("debited") && !low.contains("spent")) return null
+        val isCredit = creditWords.any { low.contains(it) }
+        if (isCredit && !strong) return null
 
         val amtStr = debitAmount.find(text)?.groupValues?.get(1)
             ?: anyAmount.find(text)?.groupValues?.get(1)
@@ -45,11 +66,20 @@ object SmsParser {
         val amt = amtStr.replace(",", "").toDoubleOrNull() ?: return null
         if (amt <= 0) return null
 
+        // Structured fields (Info:, UPI/..., UPI-ref-name) already hold a clean name.
         var merchant: String = infoField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
+        if (merchant.isBlank()) {
+            val a = axisUpi.find(text)?.groupValues?.get(1).orEmpty()
+            merchant = (" $a").replace(tailCut, "").trim()
+        }
         if (merchant.isBlank()) merchant = upiName.find(text)?.groupValues?.get(1)?.trim().orEmpty()
-        if (merchant.isBlank()) merchant = toField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
-        if (merchant.isBlank()) merchant = sender
         merchant = merchant.replace(prefixJunk, "").trim().trimEnd('.', '-', ' ')
+        if (merchant.isBlank()) {
+            // Free text like "... trf to RAJESH KUMAR Ref No 123 ...": cut at the first filler word.
+            val raw = toField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
+            merchant = (" " + raw.replace(prefixJunk, "")).replace(tailCut, "").trim().trimEnd('.', '-', ' ')
+        }
+        if (merchant.isNotEmpty() && merchant.all { it.isDigit() || it == ' ' }) merchant = ""
         if (merchant.isBlank()) merchant = sender
         if (merchant.length > 30) merchant = merchant.substring(0, 30)
 
