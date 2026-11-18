@@ -213,7 +213,7 @@ class MainActivity : Activity() {
             mailRow.addView(pill("🔄 Sync", blue) { syncMail(true); render() })
         }
         root.addView(mailRow)
-        val missed = tv("🔍 Jo SMS kharche ki tarah nahi padhe gaye, unhe dekho", 12f, true, blue)
+        val missed = tv("🔍 SMS ki jaanch (kaunse SMS padhe, kaunse chhute)", 12f, true, blue)
         missed.setPadding(0, dp(8), 0, 0)
         missed.setOnClickListener { missedDialog() }
         root.addView(missed)
@@ -467,13 +467,17 @@ class MainActivity : Activity() {
     }
 
     private fun srcLabel(src: String): String {
-        val parts = src.split("+")
-        return when {
-            parts.contains("sms") && parts.contains("mail") -> "📩 SMS + ✉️ Gmail (ek hi entry, duplicate hata diya)"
-            parts.contains("sms") -> "📩 SMS se"
-            parts.contains("mail") -> "✉️ Gmail se"
-            else -> "✍️ Haath se"
+        val parts = src.split("+").filter { it.isNotEmpty() }
+        if (parts.contains("manual")) return "✍️ Haath se"
+        val names = parts.distinct().map {
+            when (it) {
+                "sms" -> "📩 Bank SMS"
+                "email", "mail" -> "✉️ Bank mail"
+                "receipt" -> "🧾 Receipt mail"
+                else -> it
+            }
         }
+        return if (names.size > 1) names.joinToString(" + ") + " (ek hi entry, duplicate hata diya)" else names.firstOrNull() ?: ""
     }
 
     // ---------- Gmail sync ----------
@@ -582,24 +586,37 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Pehle SMS permission do", Toast.LENGTH_LONG).show()
             return
         }
-        val money = Regex("(?:rs\\.?|inr|₹)\\s*[:\\-]?\\s*[0-9]", RegexOption.IGNORE_CASE)
-        val out = StringBuilder()
+        val moneyRx = Regex("(?:rs\\.?|inr|₹)\\s*[:\\-]?\\s*[0-9]", RegexOption.IGNORE_CASE)
+        val outHints = listOf("debit", "sent", "paid", "dr.", "dr ", "trf", "transfer", "withdraw", "spent", "txn", "transaction", "upi", "imps", "neft")
+        val junk = listOf(
+            "recharge", "validity", "plan", "expire", "offer", "click", "http", "www.", "apply", "loan",
+            "cashback", "reward", "discount", "pre-approved", "kyc", "activate", "pack", "data ", "otp", "credited"
+        )
+        var total = 0
+        var read = 0
         var n = 0
+        val out = StringBuilder()
         try {
             val cur = contentResolver.query(
                 Uri.parse("content://sms/inbox"),
                 arrayOf("address", "body", "date"),
-                "date>?", arrayOf((System.currentTimeMillis() - 60L * DAY_MS).toString()), "date DESC"
+                "date>?", arrayOf((System.currentTimeMillis() - 90L * DAY_MS).toString()), "date DESC"
             )
             cur?.use {
-                while (it.moveToNext() && n < 15) {
+                while (it.moveToNext()) {
+                    total++
                     val addr = it.getString(0) ?: ""
                     val body = it.getString(1) ?: continue
+                    if (SmsParser.parse(addr, body, it.getLong(2)) != null) {
+                        read++
+                        continue
+                    }
+                    if (n >= 12) continue
                     val low = body.lowercase()
-                    if (!money.containsMatchIn(body)) continue
-                    if (SmsParser.parse(addr, body, it.getLong(2)) != null) continue
-                    val outgoing = listOf("debit", "sent", "paid", "dr", "trf", "transfer", "withdraw", "spent")
-                    if (low.contains("credited") && outgoing.none { w -> low.contains(w) }) continue
+                    if (!moneyRx.containsMatchIn(body)) continue
+                    if (outHints.none { h -> low.contains(h) }) continue
+                    // skip recharge reminders / offers / OTPs / credits unless they clearly show money going out
+                    if (junk.any { j -> low.contains(j) } && !low.contains("debited")) continue
                     n++
                     out.append("• ").append(addr).append(": ").append(body.replace('\n', ' ').take(170)).append("\n\n")
                 }
@@ -607,9 +624,13 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             out.append("SMS padh nahi paya: ").append(e.message)
         }
+        val head = "Pichle 90 din ke $total SMS mile, unme se $read kharche ki tarah padhe gaye.\n" +
+            (if (total == 0) "App ko inbox dikh hi nahi raha. Settings mein SMS permission (aur 'Allow restricted settings') check karo.\n" else "") +
+            "\n"
+        val tail = if (n == 0 && out.isEmpty()) "Aisa koi SMS nahi mila jisme paisa nikalta dikhe par app ne chhod diya ho." else "Ye SMS paisa nikalne jaise dikhe par padhe nahi gaye:\n\n$out"
         AlertDialog.Builder(this)
-            .setTitle("Ye SMS kharche ki tarah nahi padhe gaye")
-            .setMessage(if (n == 0 && out.isEmpty()) "Koi chhuta hua SMS nahi mila." else out.toString())
+            .setTitle("SMS ki jaanch")
+            .setMessage(head + tail)
             .setPositiveButton("OK", null)
             .show()
     }

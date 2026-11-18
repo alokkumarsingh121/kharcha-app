@@ -120,7 +120,7 @@ object SmsParser {
         val amt = receiptAmount.find(body)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull() ?: return null
         if (amt <= 0) return null
         val cat = guessCat(brand.lowercase())
-        return Txn("mail:$idKey", ts, amt, brand, cat.id, cat.kind, "mail", false, "")
+        return Txn("receipt:$idKey", ts, amt, brand, cat.id, cat.kind, "receipt", false, "")
     }
 
     private fun guessCat(m: String): Cat {

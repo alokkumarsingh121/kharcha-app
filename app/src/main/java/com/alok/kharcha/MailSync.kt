@@ -81,7 +81,7 @@ object MailSync {
         val text = textOf(m).replace(Regex("\\s+"), " ").trim()
         val f = from.lowercase()
         val t = if (bankKeys.any { f.contains(it) }) {
-            SmsParser.parse(from, text, ts, "mail", idKey)
+            SmsParser.parse(from, text, ts, "email", idKey)
         } else {
             SmsParser.parseReceipt(from, subj, text, ts, idKey)
         }

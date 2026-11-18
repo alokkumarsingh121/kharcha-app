@@ -39,7 +39,10 @@ object Kinds {
     fun next(k: String) = order[(order.indexOf(k) + 1) % order.size]
 }
 
-/** src is "sms", "mail", "manual", or a combination like "sms+mail" once duplicates are merged. */
+/**
+ * src is "sms" (bank SMS), "email" (bank alert mail), "receipt" (Swiggy/Rapido/... receipt mail) or "manual",
+ * or a combination like "sms+email+receipt" once duplicates of one payment are merged.
+ */
 data class Txn(
     val id: String,
     val ts: Long,
@@ -136,7 +139,9 @@ object Store {
 
     private fun sameTxn(a: Txn, b: Txn): Boolean {
         if (a.ref.isNotEmpty() && b.ref.isNotEmpty()) return a.ref == b.ref
-        return Math.abs(a.amt - b.amt) < 0.01 && Math.abs(a.ts - b.ts) <= 15 * 60 * 1000L
+        // Receipt mails (food delivery, rides, shopping) can arrive well after the bank alert.
+        val win = if (a.src.contains("receipt") || b.src.contains("receipt")) 3 * 60 * 60 * 1000L else 15 * 60 * 1000L
+        return Math.abs(a.amt - b.amt) < 0.01 && Math.abs(a.ts - b.ts) <= win
     }
 
     /**
