@@ -39,6 +39,7 @@ object Kinds {
     fun next(k: String) = order[(order.indexOf(k) + 1) % order.size]
 }
 
+/** src is "sms", "mail", "manual", or a combination like "sms+mail" once duplicates are merged. */
 data class Txn(
     val id: String,
     val ts: Long,
@@ -46,8 +47,9 @@ data class Txn(
     var merchant: String,
     var cat: String,
     var kind: String,
-    val src: String,
-    var confirmed: Boolean
+    var src: String,
+    var confirmed: Boolean,
+    var ref: String = ""
 )
 
 data class Saving(val id: String, val ts: Long, val amt: Double, val note: String)
@@ -57,9 +59,13 @@ object Store {
     private val lock = Any()
     private var ready = false
 
-    var txns = mutableListOf<Txn>()
+    private var txns = mutableListOf<Txn>()
     var savings = mutableListOf<Saving>()
+    private var seen = mutableSetOf<String>()
     var budget = 500
+    var mailEmail = ""
+    var mailPassEnc = ""
+    var lastMailSync = 0L
 
     fun init(ctx: Context) {
         synchronized(lock) {
@@ -70,10 +76,16 @@ object Store {
         }
     }
 
+    fun snapTxns(): List<Txn> = synchronized(lock) { txns.toList() }
+
     private fun load() {
         budget = sp.getInt("budget", 500)
+        mailEmail = sp.getString("mailEmail", "") ?: ""
+        mailPassEnc = sp.getString("mailPass", "") ?: ""
+        lastMailSync = sp.getLong("lastMailSync", 0L)
         txns = mutableListOf()
         savings = mutableListOf()
+        seen = HashSet(sp.getStringSet("seen", emptySet()) ?: emptySet())
         try {
             val a = JSONArray(sp.getString("txns", "[]"))
             for (i in 0 until a.length()) {
@@ -82,7 +94,7 @@ object Store {
                     Txn(
                         o.getString("id"), o.getLong("ts"), o.getDouble("amt"),
                         o.getString("m"), o.getString("c"), o.getString("k"),
-                        o.getString("s"), o.getBoolean("ok")
+                        o.getString("s"), o.getBoolean("ok"), o.optString("r", "")
                     )
                 )
             }
@@ -103,24 +115,65 @@ object Store {
                 a.put(
                     JSONObject().put("id", t.id).put("ts", t.ts).put("amt", t.amt)
                         .put("m", t.merchant).put("c", t.cat).put("k", t.kind)
-                        .put("s", t.src).put("ok", t.confirmed)
+                        .put("s", t.src).put("ok", t.confirmed).put("r", t.ref)
                 )
             }
             val b = JSONArray()
             for (s in savings) {
                 b.put(JSONObject().put("id", s.id).put("ts", s.ts).put("amt", s.amt).put("n", s.note))
             }
-            sp.edit().putString("txns", a.toString()).putString("savings", b.toString())
-                .putInt("budget", budget).apply()
+            sp.edit()
+                .putString("txns", a.toString())
+                .putString("savings", b.toString())
+                .putStringSet("seen", HashSet(seen))
+                .putInt("budget", budget)
+                .putString("mailEmail", mailEmail)
+                .putString("mailPass", mailPassEnc)
+                .putLong("lastMailSync", lastMailSync)
+                .apply()
         }
     }
 
+    private fun sameTxn(a: Txn, b: Txn): Boolean {
+        if (a.ref.isNotEmpty() && b.ref.isNotEmpty()) return a.ref == b.ref
+        return Math.abs(a.amt - b.amt) < 0.01 && Math.abs(a.ts - b.ts) <= 15 * 60 * 1000L
+    }
+
+    /**
+     * Adds a transaction unless it was already seen. If the same payment was already recorded from
+     * the other source (SMS vs Gmail), the two are merged into one entry instead of being added twice.
+     * Returns true only when a brand-new entry was added.
+     */
     fun addTxnIfNew(t: Txn): Boolean {
         synchronized(lock) {
-            if (txns.any { it.id == t.id }) return false
+            if (seen.contains(t.id)) return false
+            seen.add(t.id)
+            if (t.src != "manual") {
+                val dup = txns.firstOrNull { o ->
+                    o.src != "manual" && !o.src.split("+").contains(t.src) && sameTxn(o, t)
+                }
+                if (dup != null) {
+                    dup.src = dup.src + "+" + t.src
+                    if (dup.ref.isEmpty()) dup.ref = t.ref
+                    if (dup.cat == "other" && t.cat != "other") {
+                        dup.cat = t.cat
+                        dup.merchant = t.merchant
+                        if (!dup.confirmed) dup.kind = t.kind
+                    }
+                    save()
+                    return false
+                }
+            }
             txns.add(t)
             save()
             return true
+        }
+    }
+
+    fun removeTxn(t: Txn) {
+        synchronized(lock) {
+            txns.remove(t)
+            save()
         }
     }
 

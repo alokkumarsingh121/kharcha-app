@@ -20,11 +20,17 @@ object SmsParser {
         "(?:rs\\.?|inr|₹)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)",
         RegexOption.IGNORE_CASE
     )
-    private val infoField = Regex("Info:\\s*(.+?)(?:\\.\\s+(?:The|Avl|Available|If|Not)|\\s*$)", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+    private val infoField = Regex(
+        "Info:\\s*(.+?)(?:\\.\\s+(?:The|Avl|Available|If|Not)|\\s*$)",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    )
+    private val upiName = Regex("(?:UPI|IMPS)[-/ ]*[0-9]{9,16}[-/ ]*([A-Za-z][A-Za-z0-9 &_-]{1,28})", RegexOption.IGNORE_CASE)
     private val toField = Regex("\\b(?:to|at)\\s+([A-Za-z0-9][A-Za-z0-9 .&@_-]{1,28})", RegexOption.IGNORE_CASE)
     private val prefixJunk = Regex("^(?:UPI|IMPS|NEFT|POS|ECOM|VPA)[-/ ]*[0-9]*[-/ ]*", RegexOption.IGNORE_CASE)
+    private val refField = Regex("(?:UPI|IMPS|NEFT)[-/ ]*([0-9]{9,16})", RegexOption.IGNORE_CASE)
 
-    fun parse(sender: String, body: String, ts: Long): Txn? {
+    /** Parses a bank debit alert (SMS body or alert-email text). Returns null if it is not a debit. */
+    fun parse(sender: String, body: String, ts: Long, src: String = "sms", idKey: String? = null): Txn? {
         val text = body.replace('\n', ' ').trim()
         val low = text.lowercase()
         if (skipWords.any { low.contains(it) }) return null
@@ -40,25 +46,51 @@ object SmsParser {
         if (amt <= 0) return null
 
         var merchant: String = infoField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
-        if (merchant.isBlank()) {
-            merchant = toField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
-        }
+        if (merchant.isBlank()) merchant = upiName.find(text)?.groupValues?.get(1)?.trim().orEmpty()
+        if (merchant.isBlank()) merchant = toField.find(text)?.groupValues?.get(1)?.trim().orEmpty()
         if (merchant.isBlank()) merchant = sender
         merchant = merchant.replace(prefixJunk, "").trim().trimEnd('.', '-', ' ')
         if (merchant.isBlank()) merchant = sender
         if (merchant.length > 30) merchant = merchant.substring(0, 30)
 
+        val ref = refField.find(text)?.groupValues?.get(1).orEmpty()
         val cat = guessCat(merchant.lowercase())
         return Txn(
-            id = "sms:" + body.hashCode() + "-" + body.length,
+            id = src + ":" + (idKey ?: (body.hashCode().toString() + "-" + body.length)),
             ts = ts,
             amt = amt,
             merchant = merchant,
             cat = cat.id,
             kind = cat.kind,
-            src = "sms",
-            confirmed = false
+            src = src,
+            confirmed = false,
+            ref = ref
         )
+    }
+
+    private val brands = mapOf(
+        "rapido" to "Rapido", "uber" to "Uber", "olacabs" to "Ola", "swiggy" to "Swiggy",
+        "zomato" to "Zomato", "irctc" to "IRCTC", "blinkit" to "Blinkit", "zepto" to "Zepto",
+        "amazon" to "Amazon", "flipkart" to "Flipkart", "bigbasket" to "BigBasket"
+    )
+    private val receiptWords = listOf("receipt", "invoice", "order", "ride", "trip", "booking confirmation", "ticket", "delivered", "payment")
+    private val promoWords = listOf("offer", "sale", "% off", "discount", "deal", "coupon", "cashback", "save up")
+    private val receiptAmount = Regex(
+        "(?:grand total|total fare|total paid|amount paid|total amount|total|fare|paid)[^0-9₹]{0,40}(?:₹|rs\\.?|inr)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Parses a merchant receipt email (Rapido, Swiggy, IRCTC...). Returns null for promos / non-receipts. */
+    fun parseReceipt(from: String, subject: String, body: String, ts: Long, idKey: String): Txn? {
+        val f = from.lowercase()
+        val brand = brands.entries.firstOrNull { f.contains(it.key) }?.value ?: return null
+        val subj = subject.lowercase()
+        if (promoWords.any { subj.contains(it) }) return null
+        if (!receiptWords.any { subj.contains(it) }) return null
+        val amt = receiptAmount.find(body)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull() ?: return null
+        if (amt <= 0) return null
+        val cat = guessCat(brand.lowercase())
+        return Txn("mail:$idKey", ts, amt, brand, cat.id, cat.kind, "mail", false, "")
     }
 
     private fun guessCat(m: String): Cat {

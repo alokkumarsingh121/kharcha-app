@@ -31,6 +31,8 @@ class MainActivity : Activity() {
 
     private lateinit var root: LinearLayout
     private var day: Long = startOfDay(System.currentTimeMillis())
+    private var mailStatus = ""
+    private var syncing = false
 
     private val DAY_MS = 24L * 60 * 60 * 1000
     private val ink = 0xFF1D2024.toInt()
@@ -59,6 +61,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         scanInbox()
+        syncMail(false)
         render()
     }
 
@@ -187,6 +190,29 @@ class MainActivity : Activity() {
             else "SMS permission nahi mili. Cash/manual entry kaam karegi, bank SMS ke liye permission do.",
             12f, false, mute
         ))
+        root.addView(gap(8))
+
+        // Gmail connection row
+        val mailRow = LinearLayout(this)
+        mailRow.orientation = LinearLayout.HORIZONTAL
+        mailRow.gravity = Gravity.CENTER_VERTICAL
+        val connected = Store.mailEmail.isNotBlank()
+        val statusLine = when {
+            !connected -> "Tap karke Gmail jodo, taaki bank/receipt mails bhi judein"
+            mailStatus.isNotEmpty() -> mailStatus
+            Store.lastMailSync > 0 -> "Last sync: " + SimpleDateFormat("d MMM, h:mm a", Locale("en", "IN")).format(Date(Store.lastMailSync))
+            else -> ""
+        }
+        val mt = tv(
+            (if (connected) "✉️ Gmail: ${Store.mailEmail}" else "✉️ Gmail jodo (optional)") + "\n" + statusLine,
+            12f, true, if (connected) green else blue
+        )
+        mt.setOnClickListener { mailDialog() }
+        mailRow.addView(mt, LinearLayout.LayoutParams(0, -2, 1f))
+        if (connected) {
+            mailRow.addView(pill("🔄 Sync", blue) { syncMail(true); render() })
+        }
+        root.addView(mailRow)
         root.addView(gap(10))
 
         // day navigation
@@ -208,7 +234,7 @@ class MainActivity : Activity() {
         root.addView(nav)
         root.addView(gap(10))
 
-        val dayTx = Store.txns.filter { it.ts in day until dayEnd }.sortedByDescending { it.ts }
+        val dayTx = Store.snapTxns().filter { it.ts in day until dayEnd }.sortedByDescending { it.ts }
         val daySv = Store.savings.filter { it.ts in day until dayEnd }.sortedByDescending { it.ts }
         val need = dayTx.filter { it.kind == "need" }.sumOf { it.amt }
         val want = dayTx.filter { it.kind == "want" }.sumOf { it.amt }
@@ -289,6 +315,7 @@ class MainActivity : Activity() {
         top.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
         top.addView(tv(inr(t.amt), 15f, true))
         box.addView(top)
+        box.addView(tv(srcLabel(t.src), 11f, false, mute))
 
         val bottom = LinearLayout(this)
         bottom.orientation = LinearLayout.HORIZONTAL
@@ -306,8 +333,7 @@ class MainActivity : Activity() {
         del.setOnClickListener {
             AlertDialog.Builder(this).setMessage("Ye entry hata du?")
                 .setPositiveButton("Haan") { _, _ ->
-                    Store.txns.remove(t)
-                    Store.save()
+                    Store.removeTxn(t)
                     render()
                 }.setNegativeButton("Nahi", null).show()
         }
@@ -352,7 +378,7 @@ class MainActivity : Activity() {
         val c = card()
         val end = startOfDay(System.currentTimeMillis()) + DAY_MS
         val start = end - 7 * DAY_MS
-        val tx = Store.txns.filter { it.ts in start until end }
+        val tx = Store.snapTxns().filter { it.ts in start until end }
         val sv = Store.savings.filter { it.ts in start until end }
         val total = tx.sumOf { it.amt }
         val waste = tx.filter { it.kind == "waste" }.sumOf { it.amt }
@@ -434,6 +460,117 @@ class MainActivity : Activity() {
             c.addView(t)
         }
         return c
+    }
+
+    private fun srcLabel(src: String): String {
+        val parts = src.split("+")
+        return when {
+            parts.contains("sms") && parts.contains("mail") -> "📩 SMS + ✉️ Gmail (ek hi entry, duplicate hata diya)"
+            parts.contains("sms") -> "📩 SMS se"
+            parts.contains("mail") -> "✉️ Gmail se"
+            else -> "✍️ Haath se"
+        }
+    }
+
+    // ---------- Gmail sync ----------
+    private fun syncMail(force: Boolean) {
+        val email = Store.mailEmail
+        if (email.isBlank() || Store.mailPassEnc.isBlank() || syncing) return
+        val now = System.currentTimeMillis()
+        if (!force && now - Store.lastMailSync < 5 * 60 * 1000L) return
+        val first = Store.lastMailSync == 0L
+        val pass = try {
+            Secret.dec(Store.mailPassEnc)
+        } catch (e: Exception) {
+            mailStatus = "Password padh nahi paya, Gmail dobara jodo"
+            return
+        }
+        syncing = true
+        mailStatus = "Sync ho raha hai…"
+        Thread {
+            val msg = try {
+                val n = MailSync.sync(email, pass, if (first) 30 else 7)
+                Store.lastMailSync = System.currentTimeMillis()
+                Store.save()
+                "Sync ho gaya ($n nayi entry)"
+            } catch (e: javax.mail.AuthenticationFailedException) {
+                "Login fail: email ya App Password galat hai"
+            } catch (e: Exception) {
+                "Sync nahi hua: " + (e.message ?: "internet check karo")
+            }
+            runOnUiThread {
+                syncing = false
+                mailStatus = msg
+                render()
+            }
+        }.start()
+    }
+
+    private fun mailDialog() {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(20), dp(10), dp(20), 0)
+        box.addView(tv(
+            "Normal password nahi, Gmail ka App Password chahiye:\n" +
+                "1) myaccount.google.com/apppasswords kholo (2-Step Verification on honi chahiye)\n" +
+                "2) Naam 'Kharcha' likho, 16 akshar ka password banao\n" +
+                "3) Neeche paste karo. Ye sirf is phone mein encrypt hokar rehta hai.\n" +
+                "App sirf bank aur receipt wale mails padhta hai, kuch bhejta ya badalta nahi.",
+            12f, false, mute
+        ))
+        val em = EditText(this)
+        em.hint = "Gmail address"
+        em.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        em.setText(Store.mailEmail)
+        val pw = EditText(this)
+        pw.hint = "App Password (16 akshar)"
+        pw.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        box.addView(em)
+        box.addView(pw)
+        val b = AlertDialog.Builder(this).setTitle("Gmail jodo").setView(box)
+            .setPositiveButton("Jodo") { _, _ ->
+                val e = em.text.toString().trim()
+                val p = pw.text.toString().replace(" ", "").trim()
+                if (e.isEmpty() || p.isEmpty()) {
+                    Toast.makeText(this, "Email aur App Password dono daalo", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Check ho raha hai…", Toast.LENGTH_SHORT).show()
+                    Thread {
+                        val err = try {
+                            MailSync.test(e, p)
+                            null
+                        } catch (ex: javax.mail.AuthenticationFailedException) {
+                            "Login fail: email ya App Password galat hai"
+                        } catch (ex: Exception) {
+                            "Connect nahi hua: " + (ex.message ?: "internet check karo")
+                        }
+                        runOnUiThread {
+                            if (err == null) {
+                                Store.mailEmail = e
+                                Store.mailPassEnc = Secret.enc(p)
+                                Store.lastMailSync = 0L
+                                Store.save()
+                                mailStatus = ""
+                                syncMail(true)
+                                render()
+                            } else {
+                                Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }.start()
+                }
+            }.setNegativeButton("Cancel", null)
+        if (Store.mailEmail.isNotBlank()) {
+            b.setNeutralButton("Gmail hatao") { _, _ ->
+                Store.mailEmail = ""
+                Store.mailPassEnc = ""
+                Store.lastMailSync = 0L
+                Store.save()
+                mailStatus = ""
+                render()
+            }
+        }
+        b.show()
     }
 
     // ---------- dialogs ----------
