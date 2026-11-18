@@ -152,23 +152,28 @@ object Store {
     fun addTxnIfNew(t: Txn): Boolean {
         synchronized(lock) {
             if (seen.contains(t.id)) return false
-            seen.add(t.id)
             if (t.src != "manual") {
                 val dup = txns.firstOrNull { o ->
                     o.src != "manual" && !o.src.split("+").contains(t.src) && sameTxn(o, t)
                 }
                 if (dup != null) {
+                    seen.add(t.id)
                     dup.src = dup.src + "+" + t.src
                     if (dup.ref.isEmpty()) dup.ref = t.ref
-                    if (dup.cat == "other" && t.cat != "other") {
+                    if (!dup.confirmed && (t.src == "receipt" || (dup.cat == "other" && t.cat != "other"))) {
+                        // receipt mails / better-labelled alerts give the real merchant name (Swiggy, Rapido...)
                         dup.cat = t.cat
                         dup.merchant = t.merchant
-                        if (!dup.confirmed) dup.kind = t.kind
+                        dup.kind = t.kind
                     }
                     save()
                     return false
                 }
+                // A receipt mail is not a debit: it only names a payment already seen from the bank.
+                // Not marked seen, so it can still be matched if the bank alert arrives later.
+                if (t.src == "receipt") return false
             }
+            seen.add(t.id)
             txns.add(t)
             save()
             return true
