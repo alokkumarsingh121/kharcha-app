@@ -103,10 +103,10 @@ object SmsParser {
     private fun cleanSender(s: String): String {
         val core = s.replace(Regex("^[A-Z]{2}-"), "").replace(Regex("-[A-Z]$"), "")
         return when {
-            core.contains("UNION", true) || core.contains("ubi.bank", true) -> "Union Bank (naam nahi)"
-            core.contains("ICICI", true) -> "ICICI (naam nahi)"
-            core.contains("SBI", true) -> "SBI (naam nahi)"
-            core.contains("HDFC", true) -> "HDFC (naam nahi)"
+            core.contains("UNION", true) || core.contains("ubi.bank", true) -> "Union Bank (no name)"
+            core.contains("ICICI", true) -> "ICICI (no name)"
+            core.contains("SBI", true) -> "SBI (no name)"
+            core.contains("HDFC", true) -> "HDFC (no name)"
             else -> core
         }
     }

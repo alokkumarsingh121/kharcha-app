@@ -9,16 +9,17 @@ data class Cat(val id: String, val name: String, val emoji: String, val kind: St
 
 object Cats {
     val list = listOf(
-        Cat("grocery", "Rashan / Sabzi", "🥬", "need", "Hafte ka list banake ek hi baar kharido, mandi se lo."),
-        Cat("eatout", "Bahar khana / Delivery", "🍔", "want", "Delivery mein charges jodke 30-40% mehenga padta hai. Hafte mein 2 baar tak rakho, baaki ghar pe banao."),
-        Cat("chai", "Chai / Snacks", "☕", "want", "Roz 2-3 baar bahar ki chai/snacks mahine mein hazaaron ban jaate hain. Ghar se nashta ya thermos lo."),
-        Cat("travel", "Travel / Petrol", "🚗", "need", "Chhoti doori ke liye Rapido/cab ki jagah bus, e-rickshaw ya metro lo, ya ride share karo."),
-        Cat("shop", "Shopping", "🛍️", "want", "24 ghante ka rule: pasand aaye to ek din ruko, phir bhi chahiye to lo."),
-        Cat("bills", "Bill / Rent / EMI", "🧾", "need", "Late fee se bacho, due date pe reminder lagao."),
-        Cat("fun", "Entertainment", "🎬", "want", "Movie/outing ko mahine ka fixed limit do."),
-        Cat("health", "Health", "💊", "need", "Generic dawai (Jan Aushadhi) sasti hoti hai, doctor se pooch lo."),
-        Cat("subs", "Recharge / Subscription", "📱", "want", "Jo subscription use nahi ho rahe unhe band karo."),
-        Cat("other", "Other", "📦", "want", "Bade 'Other' kharche ko sahi category do taaki pata chale paisa kaha ja raha hai.")
+        Cat("grocery", "Groceries", "🥬", "need", "Make a weekly list and buy once; local markets are cheaper."),
+        Cat("eatout", "Eating out / Delivery", "🍔", "want", "Delivery fees make food 30-40% costlier. Keep it to twice a week, cook the rest."),
+        Cat("chai", "Tea / Snacks", "☕", "want", "2-3 tea/snack stops a day add up to thousands a month. Carry snacks or a flask."),
+        Cat("travel", "Travel / Fuel", "🚗", "need", "For short trips use bus, e-rickshaw or metro instead of Rapido/cab, or share a ride."),
+        Cat("shop", "Shopping", "🛍️", "want", "24-hour rule: wait a day before buying; buy only if you still want it."),
+        Cat("bills", "Bills / Rent / EMI", "🧾", "need", "Avoid late fees with due-date reminders."),
+        Cat("fun", "Entertainment", "🎬", "want", "Give movies and outings a fixed monthly limit."),
+        Cat("health", "Health", "💊", "need", "Generic medicines (Jan Aushadhi) are much cheaper; ask your doctor."),
+        Cat("subs", "Recharge / Subscriptions", "📱", "want", "Cancel subscriptions you don't use."),
+        Cat("transfer", "Money sent to people", "👤", "want", "Note what each transfer was for so you can see where the money goes."),
+        Cat("other", "Other", "📦", "want", "Give big 'Other' expenses a proper category to see where money goes.")
     )
 
     fun of(id: String): Cat = list.firstOrNull { it.id == id } ?: list.last()
@@ -27,9 +28,9 @@ object Cats {
 object Kinds {
     val order = listOf("need", "want", "waste")
     fun label(k: String) = when (k) {
-        "need" -> "Zaroori"
+        "need" -> "Essential"
         "want" -> "Optional"
-        else -> "Bacha sakte the"
+        else -> "Avoidable"
     }
     fun color(k: String) = when (k) {
         "need" -> 0xFF2F6FDB.toInt()

@@ -8,7 +8,7 @@
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
-        android:label="Daily Kharcha"
+        android:label="Daily Expenses"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity

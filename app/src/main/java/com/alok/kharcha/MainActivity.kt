@@ -184,10 +184,10 @@ class MainActivity : Activity() {
         val dayEnd = day + DAY_MS
         val today = startOfDay(System.currentTimeMillis())
 
-        root.addView(tv("💸 Daily Kharcha", 22f, true))
+        root.addView(tv("💸 Daily Expenses", 22f, true))
         root.addView(tv(
-            if (hasSmsPermission()) "Bank SMS apne aap padhe jaate hain (phone ke andar hi rehte hain)."
-            else "SMS permission nahi mili. Cash/manual entry kaam karegi, bank SMS ke liye permission do.",
+            if (hasSmsPermission()) "Bank SMS are read automatically and stay on this phone."
+            else "SMS permission not granted. Manual entries work; allow SMS to read bank alerts.",
             12f, false, mute
         ))
         root.addView(gap(8))
@@ -198,13 +198,13 @@ class MainActivity : Activity() {
         mailRow.gravity = Gravity.CENTER_VERTICAL
         val connected = Store.mailEmail.isNotBlank()
         val statusLine = when {
-            !connected -> "Tap karke Gmail jodo, taaki bank/receipt mails bhi judein"
+            !connected -> "Tap to connect Gmail so bank alert mails are included too"
             mailStatus.isNotEmpty() -> mailStatus
             Store.lastMailSync > 0 -> "Last sync: " + SimpleDateFormat("d MMM, h:mm a", Locale("en", "IN")).format(Date(Store.lastMailSync))
             else -> ""
         }
         val mt = tv(
-            (if (connected) "✉️ Gmail: ${Store.mailEmail}" else "✉️ Gmail jodo (optional)") + "\n" + statusLine,
+            (if (connected) "✉️ Gmail: ${Store.mailEmail}" else "✉️ Connect Gmail (optional)") + "\n" + statusLine,
             12f, true, if (connected) green else blue
         )
         mt.setOnClickListener { mailDialog() }
@@ -213,7 +213,7 @@ class MainActivity : Activity() {
             mailRow.addView(pill("🔄 Sync", blue) { syncMail(true); render() })
         }
         root.addView(mailRow)
-        val missed = tv("🔍 SMS ki jaanch (kaunse SMS padhe, kaunse chhute)", 12f, true, blue)
+        val missed = tv("🔍 SMS check (which SMS were read, which were missed)", 12f, true, blue)
         missed.setPadding(0, dp(8), 0, 0)
         missed.setOnClickListener { missedDialog() }
         root.addView(missed)
@@ -226,8 +226,8 @@ class MainActivity : Activity() {
         val prev = button("‹", 0xFF444A52.toInt()) { day -= DAY_MS; render() }
         val next = button("›", 0xFF444A52.toInt()) { if (day < today) { day += DAY_MS; render() } }
         val label = when (day) {
-            today -> "Aaj"
-            today - DAY_MS -> "Kal"
+            today -> "Today"
+            today - DAY_MS -> "Yesterday"
             else -> SimpleDateFormat("EEE, d MMM", Locale("en", "IN")).format(Date(day))
         }
         val lt = tv(label, 17f, true)
@@ -248,12 +248,12 @@ class MainActivity : Activity() {
 
         // summary card
         val sum = card()
-        sum.addView(tv("Kharcha", 12f, false, mute))
+        sum.addView(tv("Spent", 12f, false, mute))
         sum.addView(tv(inr(total), 28f, true))
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        val w = tv("Bacha sakte the\n" + inr(waste), 13f, true, red)
-        val s = tv("Bachaya\n" + inr(saved), 13f, true, green)
+        val w = tv("Avoidable\n" + inr(waste), 13f, true, red)
+        val s = tv("Saved\n" + inr(saved), 13f, true, green)
         row.addView(w, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(s, LinearLayout.LayoutParams(0, -2, 1f))
         sum.addView(row)
@@ -262,12 +262,12 @@ class MainActivity : Activity() {
         sum.addView(stackedBar(listOf(need to blue, want to amber, waste to red, maxOf(rest, 0.0) to 0xFFE6E4DD.toInt())))
         sum.addView(tv(
             if (Store.budget > 0) {
-                if (rest >= 0) "Budget ${inr(Store.budget.toDouble())} mein ${inr(rest)} bacha hai"
-                else "Budget se ${inr(-rest)} zyada ⚠️"
-            } else "Budget set nahi hai",
+                if (rest >= 0) "${inr(rest)} left of ${inr(Store.budget.toDouble())} budget"
+                else "${inr(-rest)} over budget ⚠️"
+            } else "No budget set",
             12f, false, mute
         ))
-        val bud = tv("Budget badlo", 12f, true, blue)
+        val bud = tv("Change budget", 12f, true, blue)
         bud.setPadding(0, dp(6), 0, 0)
         bud.setOnClickListener { budgetDialog() }
         sum.addView(bud)
@@ -276,8 +276,8 @@ class MainActivity : Activity() {
         // action buttons
         val btns = LinearLayout(this)
         btns.orientation = LinearLayout.HORIZONTAL
-        val b1 = button("+ Kharcha (cash)", ink) { addDialog() }
-        val b2 = button("🌱 Bachat", green) { savingDialog() }
+        val b1 = button("+ Expense (cash)", ink) { addDialog() }
+        val b2 = button("🌱 Saving", green) { savingDialog() }
         val lp1 = LinearLayout.LayoutParams(0, -2, 1f)
         lp1.rightMargin = dp(6)
         val lp2 = LinearLayout.LayoutParams(0, -2, 1f)
@@ -290,12 +290,12 @@ class MainActivity : Activity() {
         // entries
         val list = card()
         val pending = dayTx.count { !it.confirmed }
-        list.addView(tv("Is din ki entries", 15f, true))
+        list.addView(tv("Entries for this day", 15f, true))
         if (pending > 0) {
-            list.addView(tv("⚠ $pending kharche ka tag/category check karo (tag pe tap karke badlo)", 12f, false, amber))
+            list.addView(tv("⚠ Check tag/category of $pending expense(s) (tap a tag to change it)", 12f, false, amber))
         }
         if (dayTx.isEmpty() && daySv.isEmpty()) {
-            val e = tv("Koi entry nahi.", 14f, false, mute)
+            val e = tv("No entries.", 14f, false, mute)
             e.setPadding(0, dp(10), 0, dp(4))
             list.addView(e)
         }
@@ -335,11 +335,11 @@ class MainActivity : Activity() {
         val del = tv("✕", 16f, false, mute)
         del.setPadding(dp(14), dp(4), dp(4), dp(4))
         del.setOnClickListener {
-            AlertDialog.Builder(this).setMessage("Ye entry hata du?")
-                .setPositiveButton("Haan") { _, _ ->
+            AlertDialog.Builder(this).setMessage("Delete this entry?")
+                .setPositiveButton("Yes") { _, _ ->
                     Store.removeTxn(t)
                     render()
-                }.setNegativeButton("Nahi", null).show()
+                }.setNegativeButton("No", null).show()
         }
         val lp = LinearLayout.LayoutParams(-2, -2)
         lp.rightMargin = dp(8)
@@ -349,7 +349,7 @@ class MainActivity : Activity() {
         bottom.addView(fill, LinearLayout.LayoutParams(0, 1, 1f))
         bottom.addView(del)
         if (!t.confirmed) {
-            val hint = tv("  ⚠ confirm karo", 11f, false, amber)
+            val hint = tv("  ⚠ please confirm", 11f, false, amber)
             bottom.addView(hint, 2)
         }
         box.addView(bottom)
@@ -389,21 +389,21 @@ class MainActivity : Activity() {
         val want = tx.filter { it.kind == "want" }.sumOf { it.amt }
         val saved = sv.sumOf { it.amt }
 
-        c.addView(tv("📊 Pichle 7 din ki report", 15f, true))
+        c.addView(tv("📊 Last 7 days", 15f, true))
         c.addView(gap(6))
-        c.addView(tv("Kul kharcha: ${inr(total)}   (roz ka avg ${inr(total / 7)})", 14f))
-        c.addView(tv("Optional: ${inr(want)}   ·   Bacha sakte the: ${inr(waste)}", 14f, false, red))
-        c.addView(tv("Bachaya: ${inr(saved)}", 14f, false, green))
+        c.addView(tv("Total spent: ${inr(total)}   (daily avg ${inr(total / 7)})", 14f))
+        c.addView(tv("Optional: ${inr(want)}   ·   Avoidable: ${inr(waste)}", 14f, false, red))
+        c.addView(tv("Saved: ${inr(saved)}", 14f, false, green))
         val denom = saved + waste
         if (denom > 0) {
             val score = Math.round(saved / denom * 100).toInt()
             val verdict = when {
-                score >= 60 -> "Badhiya, bachat aage hai 👏"
-                score >= 30 -> "Theek hai, aur bacha sakte ho"
-                else -> "Dhyaan do, fizool kharcha zyada hai"
+                score >= 60 -> "Great, savings are ahead 👏"
+                score >= 30 -> "Okay, room to save more"
+                else -> "Careful, too much avoidable spending"
             }
             c.addView(gap(6))
-            c.addView(tv("Bachat score: $score%  –  $verdict", 14f, true))
+            c.addView(tv("Saving score: $score%  –  $verdict", 14f, true))
         }
 
         c.addView(gap(10))
@@ -440,11 +440,11 @@ class MainActivity : Activity() {
             (r.getChildAt(2) as TextView).gravity = Gravity.END
             c.addView(r)
         }
-        c.addView(tv("■ neela = zaroori+optional   ■ laal = bacha sakte the", 11f, false, mute))
+        c.addView(tv("■ blue = essential+optional   ■ red = avoidable", 11f, false, mute))
 
         // tips: top categories by avoidable, then optional
         c.addView(gap(10))
-        c.addView(tv("💡 Kaha bacha sakte ho", 15f, true))
+        c.addView(tv("💡 Where you can save", 15f, true))
         val byCat = Cats.list.map { cat ->
             Triple(cat, tx.filter { it.cat == cat.id && it.kind == "waste" }.sumOf { it.amt },
                 tx.filter { it.cat == cat.id && it.kind == "want" }.sumOf { it.amt })
@@ -453,16 +453,19 @@ class MainActivity : Activity() {
         if (tips.isEmpty()) {
             val opt = byCat.filter { it.third > 0 }.maxByOrNull { it.third }
             if (opt != null) {
-                c.addView(tv("${opt.first.emoji} ${opt.first.name}: ${inr(opt.third)} optional mein gaya. ${opt.first.tip}", 13f))
+                c.addView(tv("${opt.first.emoji} ${opt.first.name}: ${inr(opt.third)} went on optional spending. ${opt.first.tip}", 13f))
             } else {
-                c.addView(tv("Abhi koi fizool kharcha nahi 🎉", 13f, false, green))
+                c.addView(tv("No avoidable spending yet 🎉", 13f, false, green))
             }
         }
         for ((cat, w, _) in tips) {
-            val t = tv("${cat.emoji} ${cat.name}: ${inr(w)} bacha sakte the. ${cat.tip}", 13f)
+            val t = tv("${cat.emoji} ${cat.name}: ${inr(w)} was avoidable. ${cat.tip}", 13f)
             t.setPadding(0, dp(6), 0, 0)
             c.addView(t)
         }
+        c.addView(gap(12))
+        val exp = button("⬇️ Download report (Excel / PDF)", ink) { exportDialog() }
+        c.addView(exp)
         return c
     }
 
@@ -477,7 +480,7 @@ class MainActivity : Activity() {
                 else -> it
             }
         }
-        return if (names.size > 1) names.joinToString(" + ") + " (ek hi entry, duplicate hata diya)" else names.firstOrNull() ?: ""
+        return if (names.size > 1) names.joinToString(" + ") + " (merged, duplicate removed)" else names.firstOrNull() ?: ""
     }
 
     // ---------- Gmail sync ----------
@@ -490,21 +493,21 @@ class MainActivity : Activity() {
         val pass = try {
             Secret.dec(Store.mailPassEnc)
         } catch (e: Exception) {
-            mailStatus = "Password padh nahi paya, Gmail dobara jodo"
+            mailStatus = "Could not read password, reconnect Gmail"
             return
         }
         syncing = true
-        mailStatus = "Sync ho raha hai…"
+        mailStatus = "Syncing…"
         Thread {
             val msg = try {
                 val n = MailSync.sync(email, pass, if (first) 30 else 7)
                 Store.lastMailSync = System.currentTimeMillis()
                 Store.save()
-                "Sync ho gaya ($n nayi entry)"
+                "Synced ($n new)"
             } catch (e: javax.mail.AuthenticationFailedException) {
-                "Login fail: email ya App Password galat hai"
+                "Login failed: wrong email or App Password"
             } catch (e: Exception) {
-                "Sync nahi hua: " + (e.message ?: "internet check karo")
+                "Sync failed: " + (e.message ?: "check internet")
             }
             runOnUiThread {
                 syncing = false
@@ -519,11 +522,11 @@ class MainActivity : Activity() {
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(dp(20), dp(10), dp(20), 0)
         box.addView(tv(
-            "Normal password nahi, Gmail ka App Password chahiye:\n" +
-                "1) myaccount.google.com/apppasswords kholo (2-Step Verification on honi chahiye)\n" +
-                "2) Naam 'Kharcha' likho, 16 akshar ka password banao\n" +
-                "3) Neeche paste karo. Ye sirf is phone mein encrypt hokar rehta hai.\n" +
-                "App sirf bank aur receipt wale mails padhta hai, kuch bhejta ya badalta nahi.",
+            "Use a Gmail App Password, not your normal password:\n" +
+                "1) Open myaccount.google.com/apppasswords (2-Step Verification must be on)\n" +
+                "2) Name it 'Kharcha' and create the 16-letter password\n" +
+                "3) Paste it below. It is stored encrypted on this phone only.\n" +
+                "The app only reads bank and receipt mails; it never sends or changes anything.",
             12f, false, mute
         ))
         val em = EditText(this)
@@ -531,26 +534,26 @@ class MainActivity : Activity() {
         em.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
         em.setText(Store.mailEmail)
         val pw = EditText(this)
-        pw.hint = "App Password (16 akshar)"
+        pw.hint = "App Password (16 letters)"
         pw.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         box.addView(em)
         box.addView(pw)
-        val b = AlertDialog.Builder(this).setTitle("Gmail jodo").setView(box)
-            .setPositiveButton("Jodo") { _, _ ->
+        val b = AlertDialog.Builder(this).setTitle("Connect Gmail").setView(box)
+            .setPositiveButton("Connect") { _, _ ->
                 val e = em.text.toString().trim()
                 val p = pw.text.toString().replace(" ", "").trim()
                 if (e.isEmpty() || p.isEmpty()) {
-                    Toast.makeText(this, "Email aur App Password dono daalo", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Enter both email and App Password", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(this, "Check ho raha hai…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Checking…", Toast.LENGTH_SHORT).show()
                     Thread {
                         val err = try {
                             MailSync.test(e, p)
                             null
                         } catch (ex: javax.mail.AuthenticationFailedException) {
-                            "Login fail: email ya App Password galat hai"
+                            "Login failed: wrong email or App Password"
                         } catch (ex: Exception) {
-                            "Connect nahi hua: " + (ex.message ?: "internet check karo")
+                            "Could not connect: " + (ex.message ?: "check internet")
                         }
                         runOnUiThread {
                             if (err == null) {
@@ -569,7 +572,7 @@ class MainActivity : Activity() {
                 }
             }.setNegativeButton("Cancel", null)
         if (Store.mailEmail.isNotBlank()) {
-            b.setNeutralButton("Gmail hatao") { _, _ ->
+            b.setNeutralButton("Remove Gmail") { _, _ ->
                 Store.mailEmail = ""
                 Store.mailPassEnc = ""
                 Store.lastMailSync = 0L
@@ -583,7 +586,7 @@ class MainActivity : Activity() {
 
     private fun missedDialog() {
         if (!hasSmsPermission()) {
-            Toast.makeText(this, "Pehle SMS permission do", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Allow SMS permission first", Toast.LENGTH_LONG).show()
             return
         }
         val moneyRx = Regex("(?:rs\\.?|inr|₹)\\s*[:\\-]?\\s*[0-9]", RegexOption.IGNORE_CASE)
@@ -623,22 +626,77 @@ class MainActivity : Activity() {
                 }
             }
         } catch (e: Exception) {
-            out.append("SMS padh nahi paya: ").append(e.message)
+            out.append("Could not read SMS: ").append(e.message)
         }
-        val head = "Pichle 90 din ke $total SMS mile, unme se $read kharche ki tarah padhe gaye.\n" +
-            (if (total == 0) "App ko inbox dikh hi nahi raha. Settings mein SMS permission (aur 'Allow restricted settings') check karo.\n" else "") +
+        val head = "Found $total SMS in the last 90 days; $read were read as expenses.\n" +
+            (if (total == 0) "The app cannot see the inbox. Check SMS permission (and 'Allow restricted settings') in Settings.\n" else "") +
             "\n"
-        val tail = if (n == 0 && out.isEmpty()) "Aisa koi SMS nahi mila jisme paisa nikalta dikhe par app ne chhod diya ho." else "Ye SMS paisa nikalne jaise dikhe par padhe nahi gaye:\n\n$out"
+        val tail = if (n == 0 && out.isEmpty()) "No missed SMS that look like money going out." else "These SMS look like debits but were not read:\n\n$out"
         AlertDialog.Builder(this)
-            .setTitle("SMS ki jaanch")
+            .setTitle("SMS check")
             .setMessage(head + tail)
             .setPositiveButton("OK", null)
             .show()
     }
 
+    // ---------- export ----------
+    private var pendingExport: ByteArray? = null
+
+    private fun exportDialog() {
+        val ps = Report.periods()
+        AlertDialog.Builder(this).setTitle("Report period")
+            .setItems(ps.map { it.label }.toTypedArray()) { _, i ->
+                val p = ps[i]
+                AlertDialog.Builder(this).setTitle("Format")
+                    .setItems(arrayOf("Excel (.xlsx)", "PDF")) { _, f -> export(p, f == 0) }
+                    .show()
+            }.show()
+    }
+
+    private fun export(p: Period, excel: Boolean) {
+        val bytes = try {
+            if (excel) Report.xlsx(p) else Report.pdf(p)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not create report: " + e.message, Toast.LENGTH_LONG).show()
+            return
+        }
+        pendingExport = bytes
+        val stamp = SimpleDateFormat("yyyy-MM-dd", Locale("en", "IN")).format(Date())
+        val slug = p.label.substringBefore(" (").lowercase().replace(" ", "-")
+        val i = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT)
+        i.addCategory(android.content.Intent.CATEGORY_OPENABLE)
+        i.type = if (excel) "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" else "application/pdf"
+        i.putExtra(android.content.Intent.EXTRA_TITLE, "expenses-$slug-$stamp." + if (excel) "xlsx" else "pdf")
+        try {
+            startActivityForResult(i, 42)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No file picker found on this phone", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 42) return
+        val bytes = pendingExport
+        pendingExport = null
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null || bytes == null) return
+        try {
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            Toast.makeText(this, "Report saved ✔", Toast.LENGTH_LONG).show()
+            val v = android.content.Intent(android.content.Intent.ACTION_VIEW)
+            v.setDataAndType(uri, contentResolver.getType(uri))
+            v.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try { startActivity(v) } catch (e: Exception) { }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not save: " + e.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     // ---------- dialogs ----------
     private fun catDialog(t: Txn) {
-        AlertDialog.Builder(this).setTitle("Category chuno")
+        AlertDialog.Builder(this).setTitle("Choose category")
             .setItems(Cats.list.map { it.emoji + " " + it.name }.toTypedArray()) { _, i ->
                 t.cat = Cats.list[i].id
                 t.kind = Cats.list[i].kind
@@ -652,7 +710,7 @@ class MainActivity : Activity() {
         val e = EditText(this)
         e.inputType = InputType.TYPE_CLASS_NUMBER
         e.setText(Store.budget.toString())
-        AlertDialog.Builder(this).setTitle("Roz ka budget (₹)").setView(e)
+        AlertDialog.Builder(this).setTitle("Daily budget (₹)").setView(e)
             .setPositiveButton("Save") { _, _ ->
                 Store.budget = e.text.toString().toIntOrNull() ?: Store.budget
                 Store.save()
@@ -668,7 +726,7 @@ class MainActivity : Activity() {
         amt.hint = "Amount (₹)"
         amt.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         val note = EditText(this)
-        note.hint = "Kis cheez pe? (jaise: chai)"
+        note.hint = "What for? (e.g. tea)"
         val sp = Spinner(this)
         sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             Cats.list.map { it.emoji + " " + it.name })
@@ -693,11 +751,11 @@ class MainActivity : Activity() {
         box.addView(note)
         box.addView(sp)
         box.addView(rg)
-        AlertDialog.Builder(this).setTitle("Kharcha add karo").setView(box)
+        AlertDialog.Builder(this).setTitle("Add expense").setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val a = amt.text.toString().toDoubleOrNull()
                 if (a == null || a <= 0) {
-                    Toast.makeText(this, "Amount sahi daalo", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Enter a valid amount", Toast.LENGTH_SHORT).show()
                 } else {
                     val cat = Cats.list[sp.selectedItemPosition]
                     val ts = if (day == startOfDay(System.currentTimeMillis())) System.currentTimeMillis() else day + 12 * 60 * 60 * 1000L
@@ -716,18 +774,18 @@ class MainActivity : Activity() {
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(dp(20), dp(10), dp(20), 0)
         val amt = EditText(this)
-        amt.hint = "Kitna bachaya (₹)"
+        amt.hint = "Amount saved (₹)"
         amt.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         val note = EditText(this)
-        note.hint = "Kaise? (jaise: Rapido ki jagah bus)"
+        note.hint = "How? (e.g. bus instead of Rapido)"
         box.addView(amt)
         box.addView(note)
-        AlertDialog.Builder(this).setTitle("Aaj kya bachaya?").setView(box)
+        AlertDialog.Builder(this).setTitle("What did you save?").setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val a = amt.text.toString().toDoubleOrNull()
                 val n = note.text.toString().trim()
                 if (a == null || a <= 0 || n.isEmpty()) {
-                    Toast.makeText(this, "Amount aur kaise bachaya, dono likho", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Enter amount and how you saved", Toast.LENGTH_SHORT).show()
                 } else {
                     val ts = if (day == startOfDay(System.currentTimeMillis())) System.currentTimeMillis() else day + 12 * 60 * 60 * 1000L
                     Store.addSaving(Saving("s:" + UUID.randomUUID(), ts, a, n))
