@@ -681,6 +681,61 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
+    // ---------- export ----------
+    private var pendingExport: ByteArray? = null
+
+    private fun exportDialog() {
+        val ps = Report.periods()
+        AlertDialog.Builder(this).setTitle("Report period")
+            .setItems(ps.map { it.label }.toTypedArray()) { _, i ->
+                val p = ps[i]
+                AlertDialog.Builder(this).setTitle("Format")
+                    .setItems(arrayOf("Excel (.xlsx)", "PDF")) { _, f -> export(p, f == 0) }
+                    .show()
+            }.show()
+    }
+
+    private fun export(p: Period, excel: Boolean) {
+        val bytes = try {
+            if (excel) Report.xlsx(p) else Report.pdf(p)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not create report: " + e.message, Toast.LENGTH_LONG).show()
+            return
+        }
+        pendingExport = bytes
+        val stamp = SimpleDateFormat("yyyy-MM-dd", Locale("en", "IN")).format(Date())
+        val slug = p.label.substringBefore(" (").lowercase().replace(" ", "-")
+        val i = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT)
+        i.addCategory(android.content.Intent.CATEGORY_OPENABLE)
+        i.type = if (excel) "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" else "application/pdf"
+        i.putExtra(android.content.Intent.EXTRA_TITLE, "expenses-$slug-$stamp." + if (excel) "xlsx" else "pdf")
+        try {
+            startActivityForResult(i, 42)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No file picker found on this phone", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 42) return
+        val bytes = pendingExport
+        pendingExport = null
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null || bytes == null) return
+        try {
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            Toast.makeText(this, "Report saved ✔", Toast.LENGTH_LONG).show()
+            val v = android.content.Intent(android.content.Intent.ACTION_VIEW)
+            v.setDataAndType(uri, contentResolver.getType(uri))
+            v.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try { startActivity(v) } catch (e: Exception) { }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not save: " + e.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     // ---------- dialogs ----------
     private fun catDialog(t: Txn) {
         AlertDialog.Builder(this).setTitle("Choose category")
