@@ -14,7 +14,7 @@ android {
         // Every GitHub build gets a higher version, so a new APK always installs as an update.
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
         versionCode = 100 + run
-        versionName = "3.1.$run"
+        versionName = "3.2.$run"
     }
 
     // Fixed signing key from the repo's GitHub secrets (the workflow sets KS_FILE / KS_PASS). With it every

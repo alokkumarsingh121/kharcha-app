@@ -164,6 +164,63 @@ object ParserCases {
         val lonely = Txn("receipt:r2", ist(2026, 11, 21, 13, 10), 333.0, "Swiggy", "eatout", "want", "receipt", false)
         if (add(lonely) != "held") fails += "DEDUP receipt without a bank debit must not be counted"
 
+        // ---- original message kept with each entry ----
+        val hdfcBody = smsCases.first { it.body.startsWith("Sent Rs.49.00") }.body
+        val hd = Parser.parseSms("AD-HDFCBK-S", hdfcBody, now).txn
+        val hm = hd?.msgs?.singleOrNull()
+        if (hm == null) fails += "MSG sms text not kept" else {
+            if (hm.src != "sms" || hm.from != "AD-HDFCBK-S" || hm.key != hd.id) fails += "MSG sms fields: ${hm.src} ${hm.from} ${hm.key}"
+            if (!hm.text.startsWith("Sent Rs.49.00\nFrom HDFC Bank A/C *1234\nTo RAPIDO")) fails += "MSG sms line breaks lost: ${hm.text.take(60)}"
+        }
+        val icm = Parser.parseMail("credit_cards@icici.bank.in", "Transaction alert for your ICICI Bank Credit Card", ICICI_MAIL, iciciRecv, "m9").txn?.msgs?.singleOrNull()
+        if (icm == null) fails += "MSG mail text not kept" else {
+            if (!icm.text.startsWith("Dear Customer, Your ICICI Bank Credit Card XX3344 has been used")) fails += "MSG icici snippet start: ${icm.text.take(60)}"
+            if (!icm.text.contains("INR 116.00") || !icm.text.contains("RAMESH K")) fails += "MSG icici snippet lost the payment: ${icm.text}"
+            if (icm.text.contains("In case you have not") || icm.text.contains("auto-generated")) fails += "MSG icici snippet kept the footer: ${icm.text}"
+            if (icm.subject != "Transaction alert for your ICICI Bank Credit Card" || icm.src != "email") fails += "MSG icici subject/src: ${icm.subject} ${icm.src}"
+        }
+        val un = Parser.mailSnippet(UNION_MAIL)
+        if (!un.startsWith("Dear RAVI KUMAR VERMA, Greetings!") || !un.contains("Amount : Rs. 87.00") || !un.endsWith("Debit Account Number : *4821"))
+            fails += "MSG union snippet: $un"
+        val html = "View in browser\n\n￼\nHi Ravi,\nYour ride is complete.\nTotal fare  ₹ 49.00\nPaid via UPI\n\nDownload the app for offers\n© Rapido"
+        val rs = Parser.mailSnippet(html, 350)
+        if (rs != "Hi Ravi,\nYour ride is complete.\nTotal fare ₹ 49.00\nPaid via UPI") fails += "MSG receipt snippet: '$rs'"
+        val long = "Dear Customer, Rs 500.00 debited from A/c XX1234. " + "Some more words here. ".repeat(40)
+        val ls = Parser.mailSnippet(long, 120)
+        if (ls.length > 121 || !ls.endsWith("…") || !ls.startsWith("Dear Customer, Rs 500.00 debited")) fails += "MSG long mail not cut well: '$ls'"
+        if (list[0].msgs.map { it.src } != listOf("sms", "email")) fails += "MSG merged entry should keep SMS + mail texts, got ${list[0].msgs.map { it.src }}"
+        val cardDebit = Parser.parseSms("AX-ICICIT-T", smsCases[9].body, ist(2026, 11, 21, 12, 33, 40)).txn!!
+        val swiggyMail = Parser.parseMail(
+            "noreply@swiggy.in", "Your Swiggy order receipt",
+            "Hi Ravi,\nYour order from Meghna Biryani was delivered.\nGrand Total ₹1,288.00\nPaid via UPI\nDownload the app", ist(2026, 11, 21, 13, 10), "r9"
+        ).txn
+        if (swiggyMail == null || swiggyMail.msgs.singleOrNull()?.src != "receipt") fails += "MSG receipt mail text not kept"
+        else {
+            Dedup.merge(cardDebit, swiggyMail)
+            if (cardDebit.msgs.map { it.src } != listOf("sms", "receipt")) fails += "MSG receipt text should join the card debit, got ${cardDebit.msgs.map { it.src }}"
+        }
+
+        // entries saved by the older app have no text: a re-read message finds its own entry
+        val oldSms = Txn("sms:old1", ist(2026, 11, 18, 14, 24, 50), 1500.0, "MOHAN", "transfer", "want", "sms", false, "310000000001", "4821", "Union Bank")
+        val oldMerged = Txn("email:old2", ist(2026, 11, 19, 19, 56), 116.0, "RAMESH K", "other", "want", "email+sms", false, "410000000002", "3344", "ICICI Card")
+        val oldOther = Txn("sms:old3", ist(2026, 11, 19, 20, 0), 116.0, "SOMEONE", "other", "want", "sms", false, "410000000099", "3344", "ICICI Card")
+        val old = listOf(oldSms, oldMerged, oldOther)
+        val again = Parser.parseSms("VM-ICICIT-S", smsCases[8].body, ist(2026, 11, 19, 19, 56, 30)).txn!!
+        if (Dedup.owner(old, again) !== oldMerged) fails += "OWNER old merged entry not found by ref"
+        val sameId = Txn("sms:old1", 0L, 1500.0, "", "other", "want", "sms", false)
+        if (Dedup.owner(old, sameId) !== oldSms) fails += "OWNER own entry not found by id"
+        val stranger = Txn("sms:new9", ist(2026, 11, 19, 19, 57), 116.0, "", "other", "want", "sms", false, "410000000777", "3344")
+        if (Dedup.owner(old, stranger) != null) fails += "OWNER different ref must not be attached"
+        oldMerged.msgs.add(again.msgs[0])
+        val second = Txn("sms:x9", ist(2026, 11, 19, 19, 56), 116.0, "", "other", "want", "sms", false, "410000000002", "3344")
+        if (Dedup.owner(listOf(oldMerged), second) != null) fails += "OWNER entry that already has its SMS text must not take another"
+
+        // how it was paid
+        if (Parser.modeOf(smsCases[8].body, "ICICI Card") != "UPI (credit card)") fails += "MODE icici upi card: ${Parser.modeOf(smsCases[8].body, "ICICI Card")}"
+        if (Parser.modeOf(smsCases[12].body, "HDFC Card") != "Card") fails += "MODE hdfc card"
+        if (Parser.modeOf(smsCases[0].body, "Union Bank") != "") fails += "MODE union 'by MB' should stay blank"
+        if (Parser.modeOf("Rs.2000.00 withdrawn at ATM S1ANVA12 from A/c XX1234") != "ATM") fails += "MODE atm"
+
         // ---- day boundaries: 11:59 PM stays on its own day ----
         val late = Parser.txnTime("Dr Rs44.00 on 21-11-26 23:59 by MB 1", ist(2026, 11, 21, 23, 59, 30))
         if (late != ist(2026, 11, 21, 23, 59)) fails += "TIME 23:59 read as $late"

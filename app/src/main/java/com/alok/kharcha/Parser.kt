@@ -247,7 +247,78 @@ object Parser {
 
     fun parseSms(sender: String, body: String, received: Long): Parsed {
         val id = "sms:" + body.hashCode() + "-" + body.length
-        return parseText(sender, norm(body), received, "sms", id)
+        val p = parseText(sender, norm(body), received, "sms", id)
+        p.txn?.msgs?.add(Msg(id, "sms", sender, received, "", smsText(body)))
+        return p
+    }
+
+    // ---------------- original message text, kept to show with each entry ----------------
+
+    /** The SMS as the bank wrote it (line breaks kept), without stray spaces. */
+    fun smsText(body: String): String =
+        body.replace(' ', ' ').replace("\r", "").lines()
+            .map { it.replace(Regex("[ \\t]+"), " ").trim() }.filter { it.isNotEmpty() }
+            .joinToString("\n").take(600)
+
+    // Where the useful part of a mail ends: sign-off, fraud-report advice, footers.
+    private val mailStop = Regex(
+        "\\b(?:warm\\s+|best\\s+|kind\\s+)?regards\\b|\\bsincerely\\b|\\bnever share\\b|\\bdo not share\\b|" +
+            "\\bthis is an? (?:system|auto|computer)[- ]?generated|\\bauto-generated\\b|\\bplease do not reply\\b|\\bdisclaimer\\b|" +
+            "\\bunsubscribe\\b|\\bcopyright\\b|©|\\bif you have not (?:initiated|done|made|authori[sz]ed)|\\bin case you have not\\b|" +
+            "\\bif (?:this|the) transaction (?:was|is) not\\b|\\bnot done by you\\b|\\bif not (?:done by )?you\\b|\\bnot you\\?|" +
+            "\\bdownload (?:the |our )?(?:app|mobile)\\b|\\bfollow us\\b|\\bprivacy policy\\b|\\bterms (?:and|&) conditions\\b", I
+    )
+    private val greetRx = Regex("\\b(?:dear|hi|hello)\\b", I)
+
+    /**
+     * The part of a bank / receipt mail worth reading: from the greeting (or the line with the payment) up to
+     * the sign-off or fraud-report advice, at most [cap] characters, line breaks kept.
+     */
+    fun mailSnippet(body: String, cap: Int = 450): String {
+        val t = body.replace(' ', ' ').replace("￼", " ").replace("\r", "")
+            .replace(Regex("\\*([A-Za-z][^*\\n]{0,58}[A-Za-z.])\\*"), "$1")   // *NAME* (bold in plain-text mails) -> NAME
+            .lines().map { it.replace(Regex("[ \\t]+"), " ").trim() }.filter { it.isNotEmpty() }
+            .joinToString("\n")
+        if (t.isEmpty()) return ""
+        // The payment line: "Amount : Rs.." or the first debit word; else the first amount (receipts).
+        val anchor = listOfNotNull(fieldAmount.find(t)?.range?.first, debitRx.find(t)?.range?.first).minOrNull()
+            ?: receiptAmount.find(t)?.range?.first ?: amountRx.find(t)?.range?.first ?: 0
+        val greet = greetRx.findAll(t).map { it.range.first }.lastOrNull { it <= anchor && anchor - it <= 300 }
+        val start = greet ?: maxOf(t.lastIndexOf('\n', anchor - 1) + 1, anchor - 150).let { s ->
+            // start at a word, not in the middle of one
+            if (s > 0 && s < anchor && !t[s - 1].isWhitespace()) (t.indexOf(' ', s).takeIf { it in s until anchor } ?: s) else s
+        }
+        val stop = mailStop.find(t, maxOf(anchor, start) + 1)?.range?.first ?: t.length
+        var end = minOf(stop, start + cap, t.length)
+        var cut = false
+        if (end == start + cap && end < stop) {
+            val sp = t.lastIndexOf(' ', end).takeIf { it > start + cap / 2 } ?: end
+            end = sp
+            cut = true
+        }
+        val s = t.substring(start, end).trim().trimEnd(',', ';', ':', '-', '|').trim()
+        return if (cut) "$s…" else s
+    }
+
+    /** The message to keep for a mail entry. */
+    fun mailMsg(key: String, src: String, from: String, subject: String, body: String, received: Long): Msg =
+        Msg(key, src, from, received, subject.replace(Regex("\\s+"), " ").trim().take(150), mailSnippet(body, if (src == "receipt") 350 else 450))
+
+    /** How the money was paid, read from the message text: UPI, Card, IMPS, NEFT, RTGS, ATM, Net banking or "". */
+    fun modeOf(text: String, bank: String = ""): String {
+        val t = text.lowercase()
+        val card = bank.endsWith("Card") ||
+            Regex("credit card|debit card|\\bcard\\b[^a-z0-9]{0,4}(?:no\\.?\\s*)?(?:ending\\s*)?[x*]*[0-9]{3,}|\\bpos\\b").containsMatchIn(t)
+        return when {
+            Regex("\\batm\\b").containsMatchIn(t) && Regex("withdraw|cash").containsMatchIn(t) -> "ATM"
+            Regex("\\bupi\\b|\\bvpa\\b|@ok|@ybl|@icici|@paytm|@ibl|@axl").containsMatchIn(t) -> if (card) "UPI (credit card)" else "UPI"
+            Regex("\\bimps\\b").containsMatchIn(t) -> "IMPS"
+            Regex("\\bneft\\b").containsMatchIn(t) -> "NEFT"
+            Regex("\\brtgs\\b").containsMatchIn(t) -> "RTGS"
+            card -> "Card"
+            Regex("net ?banking|mobile banking").containsMatchIn(t) -> "Net / mobile banking"
+            else -> ""
+        }
     }
 
     private fun parseText(sender: String, t: String, received: Long, src: String, id: String): Parsed {
@@ -278,6 +349,12 @@ object Parser {
 
     /** Bank alert mails become debits; merchant receipts (Swiggy, Rapido...) only name a debit already found. */
     fun parseMail(from: String, subject: String, body: String, received: Long, idKey: String): Parsed {
+        val p = readMail(from, subject, body, received, idKey)
+        p.txn?.let { it.msgs.add(mailMsg(it.id, it.src, from, subject, body, received)) }
+        return p
+    }
+
+    private fun readMail(from: String, subject: String, body: String, received: Long, idKey: String): Parsed {
         val t = norm(body)
         val owner = ownerFrom(t)
         if (isBankMail(from)) {

@@ -194,12 +194,14 @@ class MainActivity : Activity() {
                 "date>?", arrayOf(since.toString()), "date DESC"
             ) ?: return
             cur.use {
-                while (it.moveToNext()) {
-                    val addr = it.getString(0) ?: "SMS"
-                    val body = it.getString(1) ?: continue
-                    val date = it.getLong(2)
-                    val t = Parser.parseSms(addr, body, date).txn
-                    if (t != null) Store.add(t)
+                Store.batch {
+                    while (it.moveToNext()) {
+                        val addr = it.getString(0) ?: "SMS"
+                        val body = it.getString(1) ?: continue
+                        val date = it.getLong(2)
+                        val t = Parser.parseSms(addr, body, date).txn
+                        if (t != null) Store.add(t)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -366,7 +368,30 @@ class MainActivity : Activity() {
         box.addView(top)
         val time = SimpleDateFormat("h:mm a", Locale("en", "IN")).format(Date(t.ts))
         val info = listOf(time, t.bank.ifBlank { "" }, srcLabel(t.src)).filter { it.isNotBlank() }.joinToString("  ·  ")
-        box.addView(tv(info + if (t.kind == "skip") "  ·  not counted" else "", 11f, false, mute))
+        val infoView = tv(info + if (t.kind == "skip") "  ·  not counted" else "", 11f, false, mute)
+        box.addView(infoView)
+        top.setOnClickListener { msgDialog(t) }
+        infoView.setOnClickListener { msgDialog(t) }
+
+        // A short look at the bank message itself; tap for the full message and a summary.
+        if (t.src != "manual") {
+            val ms = Store.msgsOf(t)
+            val first = ms.firstOrNull { it.src == "sms" } ?: ms.firstOrNull()
+            val pv = LinearLayout(this)
+            pv.orientation = LinearLayout.HORIZONTAL
+            pv.gravity = Gravity.CENTER_VERTICAL
+            pv.setPadding(dp(10), dp(7), dp(10), dp(7))
+            pv.background = bg(0xFFF3F2EE.toInt(), 10)
+            val pt = tv(if (first != null) "📄 " + preview(first) else "📄 Bank message & payment details", 12f, false, mute)
+            pt.maxLines = 2
+            pt.ellipsize = android.text.TextUtils.TruncateAt.END
+            pv.addView(pt, LinearLayout.LayoutParams(0, -2, 1f))
+            pv.addView(tv("  View ›", 12.5f, true, blue))
+            pv.setOnClickListener { msgDialog(t) }
+            val plp = LinearLayout.LayoutParams(-1, -2)
+            plp.topMargin = dp(6)
+            box.addView(pv, plp)
+        }
 
         val bottom = LinearLayout(this)
         bottom.orientation = LinearLayout.HORIZONTAL
@@ -518,7 +543,7 @@ class MainActivity : Activity() {
 
     private fun srcLabel(src: String): String {
         val parts = src.split("+").filter { it.isNotEmpty() }
-        if (parts.contains("manual")) return "✍️ Haath se"
+        if (parts.contains("manual")) return "✍️ Added by hand"
         val names = parts.distinct().map {
             when (it) {
                 "sms" -> "📩 Bank SMS"
@@ -528,6 +553,182 @@ class MainActivity : Activity() {
             }
         }
         return if (names.size > 1) names.joinToString(" + ") + " (merged, duplicate removed)" else names.firstOrNull() ?: ""
+    }
+
+    // ---------- message view ----------
+    private val exact = NumberFormat.getNumberInstance(Locale("en", "IN")).apply {
+        minimumFractionDigits = 2
+        maximumFractionDigits = 2
+    }
+    private fun inrExact(v: Double) = "₹" + exact.format(v)
+    private fun shortDate(ts: Long) = SimpleDateFormat("d MMM, h:mm a", Locale("en", "IN")).format(Date(ts))
+
+    private fun srcName(s: String) = when (s) {
+        "sms" -> "📩 Bank SMS"
+        "email", "mail" -> "✉️ Bank mail"
+        "receipt" -> "🧾 Receipt mail"
+        "manual" -> "✍️ Added by hand"
+        else -> s
+    }
+
+    /** One line of a message for the list: line breaks and the "Dear Customer," greeting dropped. */
+    private fun preview(m: Msg): String =
+        m.text.replace('\n', ' ').replace(Regex("^(?:dear|hi|hello)\\b[^,]{0,40},\\s*(?:greetings!?\\s*)?", RegexOption.IGNORE_CASE), "").trim()
+
+    /** "Union Bank A/c XX4821", "ICICI Card XX3344". */
+    private fun fromText(t: Txn): String {
+        if (t.bank.isBlank() && t.acct.isBlank()) return ""
+        val digits = if (t.acct.isBlank()) "" else if (t.bank.endsWith("Card")) " XX${t.acct}" else " A/c XX${t.acct}"
+        return (t.bank.ifBlank { "Account" } + digits).trim()
+    }
+
+    /** The summary at the top of the message view, as label / value pairs. */
+    private fun summaryRows(t: Txn, ms: List<Msg>): List<Pair<String, String>> {
+        val c = Cats.of(t.cat)
+        val parts = t.src.split("+").filter { it.isNotEmpty() }.distinct()
+        val mode = Parser.modeOf(ms.joinToString(" ") { it.text }, t.bank)
+        val source = parts.joinToString(" + ") { srcName(it) } +
+            if (parts.size > 1) "\nSame payment came ${parts.size} ways, kept as one entry (duplicate removed)" else ""
+        return listOf(
+            "Paid to" to t.displayName(),
+            "From" to fromText(t),
+            "Mode" to mode,
+            "Date & time" to SimpleDateFormat("EEE, d MMM yyyy, h:mm a", Locale("en", "IN")).format(Date(t.ts)),
+            "Ref no." to t.ref,
+            "Category" to c.emoji + " " + c.name + " · " + Kinds.label(t.kind),
+            "Counted" to if (t.kind == "skip") "No (card bill / own transfer)" else "Yes",
+            "Source" to source
+        ).filter { it.second.isNotBlank() }
+    }
+
+    private fun msgBubble(m: Msg): View {
+        val b = LinearLayout(this)
+        b.orientation = LinearLayout.VERTICAL
+        b.setPadding(dp(12), dp(10), dp(12), dp(10))
+        b.background = bg(0xFFF3F2EE.toInt(), 12)
+        b.addView(tv(srcName(m.src) + "  ·  " + m.from + "  ·  " + shortDate(m.ts), 11f, true, mute))
+        if (m.subject.isNotBlank()) {
+            val sj = tv(m.subject, 12.5f, true)
+            sj.setPadding(0, dp(4), 0, 0)
+            b.addView(sj)
+        }
+        val body = tv(m.text, 13.5f, false, ink)
+        body.setPadding(0, dp(6), 0, 0)
+        body.setLineSpacing(0f, 1.15f)
+        body.setTextIsSelectable(true)
+        b.addView(body)
+        val lp = LinearLayout.LayoutParams(-1, -2)
+        lp.topMargin = dp(8)
+        b.layoutParams = lp
+        return b
+    }
+
+    /** The SMS behind an entry, searched in the inbox (entries added before the app kept message texts). */
+    private fun findSms(t: Txn): Msg? {
+        if (!hasSmsPermission()) return null
+        try {
+            val from = t.ts - 30 * 60_000L
+            val to = t.ts + 36 * 60 * 60_000L
+            val cur = contentResolver.query(
+                Uri.parse("content://sms/inbox"), arrayOf("address", "body", "date"),
+                "date>? AND date<?", arrayOf(from.toString(), to.toString()), "date ASC"
+            ) ?: return null
+            cur.use {
+                while (it.moveToNext()) {
+                    val body = it.getString(1) ?: continue
+                    val p = Parser.parseSms(it.getString(0) ?: "SMS", body, it.getLong(2)).txn ?: continue
+                    if (p.id == t.id || Dedup.owner(listOf(t), p) != null) return p.msgs.firstOrNull()
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return null
+    }
+
+    private fun msgDialog(t: Txn) {
+        val parts = t.src.split("+").filter { it.isNotEmpty() }.distinct()
+        if (parts.contains("sms") && Store.msgsOf(t).none { it.src == "sms" }) findSms(t)?.let { Store.attach(t, it) }
+        val ms = Store.msgsOf(t)
+
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(20), dp(16), dp(20), dp(8))
+        box.addView(tv(inrExact(t.amt), 26f, true, if (t.kind == "skip") mute else ink))
+        box.addView(tv(if (t.kind == "skip") "Not counted as spending" else "Debited", 12f, false, if (t.kind == "skip") mute else red))
+        box.addView(gap(10))
+
+        val rows = summaryRows(t, ms)
+        for ((k, v) in rows) {
+            val r = LinearLayout(this)
+            r.orientation = LinearLayout.HORIZONTAL
+            r.setPadding(0, dp(3), 0, dp(3))
+            r.addView(tv(k, 12.5f, false, mute), LinearLayout.LayoutParams(dp(92), -2))
+            val vt = tv(v, 13.5f, k == "Paid to", ink)
+            vt.setTextIsSelectable(true)
+            r.addView(vt, LinearLayout.LayoutParams(0, -2, 1f))
+            box.addView(r)
+        }
+
+        val msgsBox = LinearLayout(this)
+        msgsBox.orientation = LinearLayout.VERTICAL
+        if (parts != listOf("manual")) {
+            box.addView(gap(12))
+            box.addView(tv(if (parts.size > 1) "Original messages" else "Original message", 14f, true))
+            for (m in ms) msgsBox.addView(msgBubble(m))
+            box.addView(msgsBox)
+        } else {
+            box.addView(gap(8))
+            box.addView(tv("Added by hand, so there is no bank message.", 12f, false, mute))
+        }
+
+        fun note(text: String): TextView {
+            val n = tv(text, 12f, false, mute)
+            n.setPadding(0, dp(8), 0, 0)
+            msgsBox.addView(n)
+            return n
+        }
+        if (parts.contains("sms") && ms.none { it.src == "sms" }) note(
+            if (hasSmsPermission()) "📩 Bank SMS: not found in the SMS inbox any more (it may have been deleted)."
+            else "📩 Bank SMS: allow SMS permission to see it."
+        )
+        for (s in listOf("email", "receipt")) {
+            if (!parts.contains(s) || ms.any { it.src == s }) continue
+            val mailId = if (s == "email" && t.id.startsWith("email:")) t.id.removePrefix("email:") else ""
+            val pass = if (mailId.isNotBlank() && Store.mailEmail.isNotBlank()) try { Secret.dec(Store.mailPassEnc) } catch (e: Exception) { "" } else ""
+            if (pass.isBlank()) {
+                note(srcName(s) + ": text was not saved for this older entry (new entries keep it).")
+                continue
+            }
+            val wait = note("⏳ Loading the bank mail from Gmail…")
+            val email = Store.mailEmail
+            Thread {
+                val m = try { MailSync.fetchMsg(email, pass, mailId, t.id, s) } catch (e: Exception) { null }
+                if (m != null) Store.attach(t, m)
+                runOnUiThread {
+                    msgsBox.removeView(wait)
+                    if (m != null) msgsBox.addView(msgBubble(m)) else note("✉️ Bank mail: could not load it from Gmail (check internet).")
+                }
+            }.start()
+        }
+
+        val sv = ScrollView(this)
+        sv.addView(box)
+        AlertDialog.Builder(this)
+            .setView(sv)
+            .setPositiveButton("Close", null)
+            .setNeutralButton("Copy") { _, _ ->
+                val now = Store.msgsOf(t)
+                val text = inrExact(t.amt) + "\n" +
+                    summaryRows(t, now).joinToString("\n") { it.first + ": " + it.second.replace("\n", " · ") } +
+                    now.joinToString("") { "\n\n" + srcName(it.src) + " · " + it.from + " · " + shortDate(it.ts) + "\n" + (if (it.subject.isNotBlank()) it.subject + "\n" else "") + it.text }
+                try {
+                    val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("Payment", text))
+                    Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                }
+            }
+            .show()
     }
 
     // ---------- Gmail sync ----------

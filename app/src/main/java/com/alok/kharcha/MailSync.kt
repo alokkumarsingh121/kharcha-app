@@ -13,6 +13,7 @@ import javax.mail.internet.MimeMessage
 import javax.mail.search.AndTerm
 import javax.mail.search.ComparisonTerm
 import javax.mail.search.FromStringTerm
+import javax.mail.search.MessageIDTerm
 import javax.mail.search.OrTerm
 import javax.mail.search.ReceivedDateTerm
 import javax.mail.search.SearchTerm
@@ -48,7 +49,9 @@ object MailSync {
     }
 
     /** Returns the number of brand-new entries added. */
-    fun sync(email: String, pass: String, days: Int): Int {
+    fun sync(email: String, pass: String, days: Int): Int = Store.batch { syncAll(email, pass, days) }
+
+    private fun syncAll(email: String, pass: String, days: Int): Int {
         val store = connect(email, pass)
         try {
             val since = Date(System.currentTimeMillis() - days * 24L * 60 * 60 * 1000)
@@ -111,6 +114,35 @@ object MailSync {
         val r = Store.add(t)
         if (r != Store.HELD) Store.markMailDone(idKey)   // unmatched receipts are retried next sync
         return r == Store.ADDED
+    }
+
+    /**
+     * Finds one mail by its Message-ID (All Mail, then Trash) and returns the part worth reading.
+     * Used to show the mail text of entries added before the app kept message texts.
+     */
+    fun fetchMsg(email: String, pass: String, messageId: String, key: String, src: String): Msg? {
+        val store = connect(email, pass)
+        try {
+            for (folder in folders(store)) {
+                try {
+                    folder.open(Folder.READ_ONLY)
+                    val m = folder.search(MessageIDTerm(messageId)).firstOrNull()
+                    if (m != null) {
+                        val from = ((m.from?.firstOrNull()) as? InternetAddress)?.address ?: ""
+                        val ts = (m.receivedDate ?: m.sentDate ?: Date()).time
+                        val msg = Parser.mailMsg(key, src, from, m.subject ?: "", textOf(m), ts)
+                        folder.close(false)
+                        return msg
+                    }
+                    folder.close(false)
+                } catch (e: Exception) {
+                    // try the next folder
+                }
+            }
+            return null
+        } finally {
+            try { store.close() } catch (e: Exception) { }
+        }
     }
 
     private fun textOf(p: Part): String {

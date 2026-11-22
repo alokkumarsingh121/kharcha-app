@@ -63,8 +63,17 @@ data class Txn(
     var bank: String = "",
     var deleted: Boolean = false
 ) {
+    /** The original bank SMS / mail texts this entry was read from (one per source, merged ones together). */
+    val msgs: MutableList<Msg> = mutableListOf()
+
     val counted: Boolean get() = !deleted && kind != "skip"
     fun displayName(): String = merchant.ifBlank { if (bank.isNotBlank()) "Payment · $bank" else "Payment" }
 }
+
+/**
+ * One original message behind an entry. key = the message's own id ("sms:…", "email:<Message-ID>", "receipt:…"),
+ * src = "sms" / "email" / "receipt", from = sender, ts = when it arrived, text = SMS text or the useful part of the mail.
+ */
+data class Msg(val key: String, val src: String, val from: String, val ts: Long, val subject: String, val text: String)
 
 data class Saving(val id: String, val ts: Long, val amt: Double, val note: String)

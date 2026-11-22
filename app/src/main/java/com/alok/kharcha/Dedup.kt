@@ -47,7 +47,38 @@ object Dedup {
         return old
     }
 
+    /** Keeps the texts of every message behind one payment (SMS + bank mail + receipt), each once. */
+    fun addMsgs(into: Txn, msgs: List<Msg>): Boolean {
+        var changed = false
+        for (m in msgs) {
+            if (m.text.isBlank() || into.msgs.any { it.key == m.key } || into.msgs.size >= 5) continue
+            into.msgs.add(m)
+            changed = true
+        }
+        return changed
+    }
+
+    /**
+     * For a message counted before its text was kept (older app version): the entry it belongs to.
+     * Its own entry if it created one, else the merged entry that lists its source, has no text from that
+     * source yet and matches it (same reference number, or same amount, account and time).
+     */
+    fun owner(existing: List<Txn>, t: Txn): Txn? {
+        existing.firstOrNull { it.id == t.id }?.let { return it }
+        val src = t.src
+        val pool = existing.filter {
+            it.src != "manual" && src in srcs(it) && Math.abs(it.amt - t.amt) < 0.01 && it.msgs.none { m -> m.src == src }
+        }
+        pool.firstOrNull { sameRef(it.ref, t.ref) }?.let { return it }
+        val win = if (src == "receipt") 180 * MIN else 15 * MIN
+        return pool.filter {
+            (it.ref.isEmpty() || t.ref.isEmpty()) && (it.acct.isEmpty() || t.acct.isEmpty() || it.acct == t.acct) &&
+                Math.abs(it.ts - t.ts) <= win
+        }.minByOrNull { Math.abs(it.ts - t.ts) }
+    }
+
     fun merge(into: Txn, t: Txn) {
+        addMsgs(into, t.msgs)
         into.src = (into.src.split("+") + t.src.split("+")).filter { it.isNotEmpty() }.distinct().joinToString("+")
         if (into.ref.isEmpty()) into.ref = t.ref
         if (into.acct.isEmpty()) into.acct = t.acct
