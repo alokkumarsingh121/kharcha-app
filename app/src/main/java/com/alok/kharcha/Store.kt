@@ -5,59 +5,6 @@ import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class Cat(val id: String, val name: String, val emoji: String, val kind: String, val tip: String)
-
-object Cats {
-    val list = listOf(
-        Cat("grocery", "Groceries", "🥬", "need", "Make a weekly list and buy once; local markets are cheaper."),
-        Cat("eatout", "Eating out / Delivery", "🍔", "want", "Delivery fees make food 30-40% costlier. Keep it to twice a week, cook the rest."),
-        Cat("chai", "Tea / Snacks", "☕", "want", "2-3 tea/snack stops a day add up to thousands a month. Carry snacks or a flask."),
-        Cat("travel", "Travel / Fuel", "🚗", "need", "For short trips use bus, e-rickshaw or metro instead of Rapido/cab, or share a ride."),
-        Cat("shop", "Shopping", "🛍️", "want", "24-hour rule: wait a day before buying; buy only if you still want it."),
-        Cat("bills", "Bills / Rent / EMI", "🧾", "need", "Avoid late fees with due-date reminders."),
-        Cat("fun", "Entertainment", "🎬", "want", "Give movies and outings a fixed monthly limit."),
-        Cat("health", "Health", "💊", "need", "Generic medicines (Jan Aushadhi) are much cheaper; ask your doctor."),
-        Cat("subs", "Recharge / Subscriptions", "📱", "want", "Cancel subscriptions you don't use."),
-        Cat("transfer", "Money sent to people", "👤", "want", "Note what each transfer was for so you can see where the money goes."),
-        Cat("other", "Other", "📦", "want", "Give big 'Other' expenses a proper category to see where money goes.")
-    )
-
-    fun of(id: String): Cat = list.firstOrNull { it.id == id } ?: list.last()
-}
-
-object Kinds {
-    val order = listOf("need", "want", "waste")
-    fun label(k: String) = when (k) {
-        "need" -> "Essential"
-        "want" -> "Optional"
-        else -> "Avoidable"
-    }
-    fun color(k: String) = when (k) {
-        "need" -> 0xFF2F6FDB.toInt()
-        "want" -> 0xFFE0A21A.toInt()
-        else -> 0xFFD8472F.toInt()
-    }
-    fun next(k: String) = order[(order.indexOf(k) + 1) % order.size]
-}
-
-/**
- * src is "sms" (bank SMS), "email" (bank alert mail), "receipt" (Swiggy/Rapido/... receipt mail) or "manual",
- * or a combination like "sms+email+receipt" once duplicates of one payment are merged.
- */
-data class Txn(
-    val id: String,
-    val ts: Long,
-    val amt: Double,
-    var merchant: String,
-    var cat: String,
-    var kind: String,
-    var src: String,
-    var confirmed: Boolean,
-    var ref: String = ""
-)
-
-data class Saving(val id: String, val ts: Long, val amt: Double, val note: String)
-
 object Store {
     private lateinit var sp: SharedPreferences
     private val lock = Any()
@@ -70,6 +17,10 @@ object Store {
     var mailEmail = ""
     var mailPassEnc = ""
     var lastMailSync = 0L
+    private var mailChecked = LinkedHashSet<String>()
+
+    /** Bumped on every change so an open screen can refresh itself. */
+    @Volatile var version = 0
 
     fun init(ctx: Context) {
         synchronized(lock) {
@@ -80,7 +31,8 @@ object Store {
         }
     }
 
-    fun snapTxns(): List<Txn> = synchronized(lock) { txns.toList() }
+    /** Visible entries (deleted ones are kept only to recognise the same payment again). */
+    fun snapTxns(): List<Txn> = synchronized(lock) { txns.filter { !it.deleted } }
 
     private fun load() {
         budget = sp.getInt("budget", 500)
@@ -90,6 +42,8 @@ object Store {
         txns = mutableListOf()
         savings = mutableListOf()
         seen = HashSet(sp.getStringSet("seen", emptySet()) ?: emptySet())
+        mailChecked = LinkedHashSet((sp.getString("mailChecked", "") ?: "").split("\n").filter { it.isNotBlank() })
+        Parser.ownerNames = (sp.getString("owners", "") ?: "").split("\n").filter { it.isNotBlank() }
         try {
             val a = JSONArray(sp.getString("txns", "[]"))
             for (i in 0 until a.length()) {
@@ -98,7 +52,8 @@ object Store {
                     Txn(
                         o.getString("id"), o.getLong("ts"), o.getDouble("amt"),
                         o.getString("m"), o.getString("c"), o.getString("k"),
-                        o.getString("s"), o.getBoolean("ok"), o.optString("r", "")
+                        o.getString("s"), o.getBoolean("ok"), o.optString("r", ""),
+                        o.optString("a", ""), o.optString("b", ""), o.optBoolean("del", false)
                     )
                 )
             }
@@ -120,6 +75,7 @@ object Store {
                     JSONObject().put("id", t.id).put("ts", t.ts).put("amt", t.amt)
                         .put("m", t.merchant).put("c", t.cat).put("k", t.kind)
                         .put("s", t.src).put("ok", t.confirmed).put("r", t.ref)
+                        .put("a", t.acct).put("b", t.bank).put("del", t.deleted)
                 )
             }
             val b = JSONArray()
@@ -134,56 +90,65 @@ object Store {
                 .putString("mailEmail", mailEmail)
                 .putString("mailPass", mailPassEnc)
                 .putLong("lastMailSync", lastMailSync)
+                .putString("mailChecked", mailChecked.joinToString("\n"))
+                .putString("owners", Parser.ownerNames.joinToString("\n"))
                 .apply()
+            version++
         }
     }
 
-    private fun sameTxn(a: Txn, b: Txn): Boolean {
-        if (a.ref.isNotEmpty() && b.ref.isNotEmpty()) return a.ref == b.ref
-        // Receipt mails (food delivery, rides, shopping) can arrive well after the bank alert.
-        val win = if (a.src.contains("receipt") || b.src.contains("receipt")) 3 * 60 * 60 * 1000L else 15 * 60 * 1000L
-        return Math.abs(a.amt - b.amt) < 0.01 && Math.abs(a.ts - b.ts) <= win
-    }
+    const val SEEN = 0
+    const val ADDED = 1
+    const val MERGED = 2
+    const val HELD = 3
 
     /**
-     * Adds a transaction unless it was already seen. If the same payment was already recorded from
-     * the other source (SMS vs Gmail), the two are merged into one entry instead of being added twice.
-     * Returns true only when a brand-new entry was added.
+     * Adds a payment unless it was already seen. The same payment arriving from another source
+     * (bank SMS, bank mail, receipt mail) is merged into one entry - see Dedup for the rules.
      */
-    fun addTxnIfNew(t: Txn): Boolean {
+    fun add(t: Txn): Int {
         synchronized(lock) {
-            if (seen.contains(t.id)) return false
-            if (t.src != "manual") {
-                val dup = txns.firstOrNull { o ->
-                    o.src != "manual" && !o.src.split("+").contains(t.src) && sameTxn(o, t)
-                }
-                if (dup != null) {
-                    seen.add(t.id)
-                    dup.src = dup.src + "+" + t.src
-                    if (dup.ref.isEmpty()) dup.ref = t.ref
-                    if (!dup.confirmed && (t.src == "receipt" || (dup.cat == "other" && t.cat != "other"))) {
-                        // receipt mails / better-labelled alerts give the real merchant name (Swiggy, Rapido...)
-                        dup.cat = t.cat
-                        dup.merchant = t.merchant
-                        dup.kind = t.kind
-                    }
-                    save()
-                    return false
-                }
-                // A receipt mail is not a debit: it only names a payment already seen from the bank.
-                // Not marked seen, so it can still be matched if the bank alert arrives later.
-                if (t.src == "receipt") return false
+            if (seen.contains(t.id)) return SEEN
+            val dup = Dedup.find(txns, t)
+            if (dup != null) {
+                seen.add(t.id)
+                Dedup.merge(dup, t)
+                save()
+                return MERGED
             }
+            // A receipt mail is not a debit: it only names a payment already seen from the bank.
+            // Not marked seen, so it can still be matched if the bank alert arrives later.
+            if (t.src == "receipt") return HELD
             seen.add(t.id)
             txns.add(t)
             save()
-            return true
+            return ADDED
         }
     }
 
+    fun addTxnIfNew(t: Txn): Boolean = add(t) == ADDED
+
+    /** Hides an entry but remembers it, so the other source of the same payment does not bring it back. */
     fun removeTxn(t: Txn) {
         synchronized(lock) {
-            txns.remove(t)
+            if (t.src == "manual") txns.remove(t) else t.deleted = true
+            save()
+        }
+    }
+
+    fun mailDone(id: String): Boolean = synchronized(lock) { mailChecked.contains(id) }
+
+    fun markMailDone(id: String) {
+        synchronized(lock) {
+            mailChecked.add(id)
+            while (mailChecked.size > 4000) mailChecked.remove(mailChecked.first())
+        }
+    }
+
+    fun addOwner(name: String) {
+        synchronized(lock) {
+            if (name.isBlank() || Parser.ownerNames.contains(name)) return
+            Parser.ownerNames = (Parser.ownerNames + name).takeLast(3)
             save()
         }
     }

@@ -16,8 +16,8 @@ class SmsReceiver : BroadcastReceiver() {
             grouped.getOrPut(addr) { StringBuilder() }.append(m.messageBody ?: "")
         }
         for ((addr, body) in grouped) {
-            val t = SmsParser.parse(addr, body.toString(), System.currentTimeMillis())
-            if (t != null) Store.addTxnIfNew(t)
+            val t = Parser.parseSms(addr, body.toString(), System.currentTimeMillis()).txn
+            if (t != null) Store.add(t)
         }
     }
 }

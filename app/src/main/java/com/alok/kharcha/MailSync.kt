@@ -22,7 +22,7 @@ import javax.mail.search.SearchTerm
  * payment / ride / food / travel senders. Nothing is sent anywhere; mails are parsed on the phone.
  */
 object MailSync {
-    private val bankKeys = listOf("ubi.bank", "unionbank", "icici", "hdfc", "sbi", "axisbank", "kotak", "paytm", "phonepe", "idfc", "yesbank", "pnb")
+    private val bankKeys = Parser.bankMailKeys
     private val merchantKeys = listOf(
         "rapido", "uber", "olacabs", "swiggy", "zomato", "irctc", "blinkit", "zepto",
         "amazon", "flipkart", "bigbasket"
@@ -60,8 +60,11 @@ object MailSync {
             for (folder in folders(store)) {
                 try {
                     folder.open(Folder.READ_ONLY)
-                    val msgs = folder.search(term)
-                    for (m in msgs.takeLast(200)) {
+                    val msgs = folder.search(term).takeLast(300).toTypedArray()
+                    val fp = javax.mail.FetchProfile()
+                    fp.add(javax.mail.FetchProfile.Item.ENVELOPE)
+                    folder.fetch(msgs, fp)
+                    for (m in msgs) {
                         try {
                             if (handle(m)) added++
                         } catch (e: Exception) {
@@ -99,15 +102,15 @@ object MailSync {
         val subj = m.subject ?: ""
         val ts = (m.receivedDate ?: m.sentDate ?: Date()).time
         val idKey = (m as? MimeMessage)?.messageID ?: (from + subj + ts)
-        val text = textOf(m).replace(Regex("\\s+"), " ").trim()
-        val f = from.lowercase()
-        val t = if (bankKeys.any { f.contains(it) }) {
-            SmsParser.parseAlertMail(from, subj, text, ts, idKey)
-                ?: SmsParser.parse(from, text, ts, "email", idKey)
-        } else {
-            SmsParser.parseReceipt(from, subj, text, ts, idKey)
-        }
-        return t != null && Store.addTxnIfNew(t)
+        if (Store.mailDone(idKey)) return false          // already read in an earlier sync
+        val text = textOf(m)
+        val p = Parser.parseMail(from, subj, text, ts, idKey)
+        if (p.owner.isNotBlank()) Store.addOwner(p.owner)
+        val t = p.txn
+        if (t == null) { Store.markMailDone(idKey); return false }
+        val r = Store.add(t)
+        if (r != Store.HELD) Store.markMailDone(idKey)   // unmatched receipts are retried next sync
+        return r == Store.ADDED
     }
 
     private fun textOf(p: Part): String {

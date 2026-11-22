@@ -52,7 +52,10 @@ object Report {
     }
 
     private class Data(p: Period) {
-        val tx = Store.snapTxns().filter { it.ts >= p.start && it.ts < p.end }.sortedBy { it.ts }
+        /** Every entry in the period (shown in lists) and only the counted ones (used for totals). */
+        val all = Store.snapTxns().filter { it.ts >= p.start && it.ts < p.end }.sortedBy { it.ts }
+        val tx = all.filter { it.kind != "skip" }
+        val notCounted = all.filter { it.kind == "skip" }.sumOf { it.amt }
         val sv = Store.savings.filter { it.ts >= p.start && it.ts < p.end }.sortedBy { it.ts }
         val total = tx.sumOf { it.amt }
         val need = tx.filter { it.kind == "need" }.sumOf { it.amt }
@@ -133,18 +136,19 @@ object Report {
         summary.row("Saved", d.saved)
         summary.row("Saving score %", d.score ?: "-")
         summary.row("Number of expenses", d.tx.size)
+        summary.row("Not counted (card bill / own transfer)", d.notCounted)
         summary.row()
         summary.row("#Category", "#Spent", "#Avoidable")
         for ((c, t, w) in d.byCat) summary.row(c.name, t, w)
 
         val entries = Sheet("Expenses")
         entries.row("Date", "Time", "Paid to / for", "Category", "Type", "Amount (Rs)", "Source", "Reference")
-        for (t in d.tx) entries.row(
-            dFmt.format(Date(t.ts)), tFmt.format(Date(t.ts)), t.merchant, Cats.of(t.cat).name,
+        for (t in d.all) entries.row(
+            dFmt.format(Date(t.ts)), tFmt.format(Date(t.ts)), t.displayName(), Cats.of(t.cat).name,
             Kinds.label(t.kind), t.amt, source(t.src), t.ref.ifEmpty { null }
         )
         entries.row()
-        entries.row("#Total", null, null, null, null, d.total)
+        entries.row("#Total (counted)", null, null, null, null, d.total)
 
         val daily = Sheet("Daily")
         daily.row("Date", "Spent (Rs)")
@@ -262,12 +266,12 @@ object Report {
             page!!.canvas.drawText("Type", cols[4], y, mute); right("Amount", W - M, mute); y += 14f
         }
         header()
-        if (d.tx.isEmpty()) { page!!.canvas.drawText("No expenses in this period.", M, y, text); y += 14f }
-        for (t in d.tx) {
+        if (d.all.isEmpty()) { page!!.canvas.drawText("No expenses in this period.", M, y, text); y += 14f }
+        for (t in d.all) {
             if (y + 14f > H - 40f) { newPage(); header() }
             page!!.canvas.drawText(SimpleDateFormat("dd MMM", inLocale).format(Date(t.ts)), cols[0], y, text)
             page!!.canvas.drawText(tFmt.format(Date(t.ts)), cols[1], y, text)
-            page!!.canvas.drawText(clip(t.merchant, 155f, text), cols[2], y, text)
+            page!!.canvas.drawText(clip(t.displayName(), 155f, text), cols[2], y, if (t.kind == "skip") mute else text)
             page!!.canvas.drawText(clip(Cats.of(t.cat).name, 95f, text), cols[3], y, text)
             page!!.canvas.drawText(Kinds.label(t.kind), cols[4], y, if (t.kind == "waste") red else text)
             right(inr(t.amt), W - M, bold)
@@ -275,7 +279,9 @@ object Report {
         }
         need(20f)
         page!!.canvas.drawLine(M, y - 8f, W - M, y - 8f, line); y += 4f
-        page!!.canvas.drawText("Total", M, y, bold); right(inr(d.total), W - M, bold); y += 20f
+        page!!.canvas.drawText("Total", M, y, bold); right(inr(d.total), W - M, bold); y += 14f
+        if (d.notCounted > 0) { page!!.canvas.drawText("Not counted (card bill / own transfer): " + inr(d.notCounted), M, y, mute); y += 6f }
+        y += 14f
 
         if (d.sv.isNotEmpty()) {
             need(40f)

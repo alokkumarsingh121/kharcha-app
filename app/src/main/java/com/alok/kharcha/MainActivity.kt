@@ -33,6 +33,24 @@ class MainActivity : Activity() {
     private var day: Long = startOfDay(System.currentTimeMillis())
     private var mailStatus = ""
     private var syncing = false
+    private var followToday = true          // keep showing today, also after midnight
+    private var shownVersion = -1
+    private var ticks = 0
+    private var fullScanDone = false
+    private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // Re-checks the SMS inbox every few seconds while the app is open, so a payment shows up
+    // as soon as the bank SMS arrives (not only the next time the app is opened).
+    private val tick = object : Runnable {
+        override fun run() {
+            ticks++
+            scanInbox(quick = true)
+            val today = startOfDay(System.currentTimeMillis())
+            if (followToday && day != today) { day = today; shownVersion = -1 }
+            if (Store.version != shownVersion) render()
+            ui.postDelayed(this, if (ticks < 24) 5_000L else 15_000L)
+        }
+    }
 
     private val DAY_MS = 24L * 60 * 60 * 1000
     private val ink = 0xFF1D2024.toInt()
@@ -60,9 +78,19 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        scanInbox()
+        if (followToday) day = startOfDay(System.currentTimeMillis())
+        scanInbox(quick = fullScanDone)
+        fullScanDone = true
         syncMail(false)
         render()
+        ticks = 0
+        ui.removeCallbacks(tick)
+        ui.postDelayed(tick, 5_000L)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        ui.removeCallbacks(tick)
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
@@ -155,10 +183,11 @@ class MainActivity : Activity() {
     }
 
     // ---------- SMS inbox scan ----------
-    private fun scanInbox() {
+    /** Reads bank SMS from the inbox: 90 days on first open, the last 2 days on later checks. */
+    private fun scanInbox(quick: Boolean = false) {
         if (!hasSmsPermission()) return
         try {
-            val since = System.currentTimeMillis() - 90L * DAY_MS
+            val since = System.currentTimeMillis() - (if (quick) 2L else 90L) * DAY_MS
             val cur = contentResolver.query(
                 Uri.parse("content://sms/inbox"),
                 arrayOf("address", "body", "date"),
@@ -169,8 +198,8 @@ class MainActivity : Activity() {
                     val addr = it.getString(0) ?: "SMS"
                     val body = it.getString(1) ?: continue
                     val date = it.getLong(2)
-                    val t = SmsParser.parse(addr, body, date)
-                    if (t != null) Store.addTxnIfNew(t)
+                    val t = Parser.parseSms(addr, body, date).txn
+                    if (t != null) Store.add(t)
                 }
             }
         } catch (e: Exception) {
@@ -180,11 +209,17 @@ class MainActivity : Activity() {
 
     // ---------- UI ----------
     private fun render() {
+        shownVersion = Store.version
         root.removeAllViews()
         val dayEnd = day + DAY_MS
         val today = startOfDay(System.currentTimeMillis())
 
-        root.addView(tv("💸 Daily Expenses", 22f, true))
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.BOTTOM
+        head.addView(tv("💸 Daily Expenses", 22f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(tv("v3.0", 11f, false, mute))
+        root.addView(head)
         root.addView(tv(
             if (hasSmsPermission()) "Bank SMS are read automatically and stay on this phone."
             else "SMS permission not granted. Manual entries work; allow SMS to read bank alerts.",
@@ -223,8 +258,10 @@ class MainActivity : Activity() {
         val nav = LinearLayout(this)
         nav.orientation = LinearLayout.HORIZONTAL
         nav.gravity = Gravity.CENTER_VERTICAL
-        val prev = button("‹", 0xFF444A52.toInt()) { day -= DAY_MS; render() }
-        val next = button("›", 0xFF444A52.toInt()) { if (day < today) { day += DAY_MS; render() } }
+        val prev = button("‹", 0xFF444A52.toInt()) { day -= DAY_MS; followToday = false; render() }
+        val next = button("›", 0xFF444A52.toInt()) {
+            if (day < today) { day += DAY_MS; followToday = day >= today; render() }
+        }
         val label = when (day) {
             today -> "Today"
             today - DAY_MS -> "Yesterday"
@@ -236,6 +273,9 @@ class MainActivity : Activity() {
         nav.addView(lt, LinearLayout.LayoutParams(0, -2, 1f))
         nav.addView(next, LinearLayout.LayoutParams(dp(52), -2))
         root.addView(nav)
+        val range = tv(SimpleDateFormat("d MMM yyyy", Locale("en", "IN")).format(Date(day)) + " · 12:00 AM to 11:59 PM", 11f, false, mute)
+        range.gravity = Gravity.CENTER
+        root.addView(range, LinearLayout.LayoutParams(-1, -2))
         root.addView(gap(10))
 
         val dayTx = Store.snapTxns().filter { it.ts in day until dayEnd }.sortedByDescending { it.ts }
@@ -245,6 +285,7 @@ class MainActivity : Activity() {
         val waste = dayTx.filter { it.kind == "waste" }.sumOf { it.amt }
         val total = need + want + waste
         val saved = daySv.sumOf { it.amt }
+        val notCounted = dayTx.filter { it.kind == "skip" }.sumOf { it.amt }
 
         // summary card
         val sum = card()
@@ -257,6 +298,7 @@ class MainActivity : Activity() {
         row.addView(w, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(s, LinearLayout.LayoutParams(0, -2, 1f))
         sum.addView(row)
+        if (notCounted > 0) sum.addView(tv("Not counted (card bill / own transfer): ${inr(notCounted)}", 11f, false, mute))
         sum.addView(gap(8))
         val rest = Store.budget - total
         sum.addView(stackedBar(listOf(need to blue, want to amber, waste to red, maxOf(rest, 0.0) to 0xFFE6E4DD.toInt())))
@@ -289,7 +331,7 @@ class MainActivity : Activity() {
 
         // entries
         val list = card()
-        val pending = dayTx.count { !it.confirmed }
+        val pending = dayTx.count { !it.confirmed && it.kind != "skip" }
         list.addView(tv("Entries for this day", 15f, true))
         if (pending > 0) {
             list.addView(tv("⚠ Check tag/category of $pending expense(s) (tap a tag to change it)", 12f, false, amber))
@@ -314,12 +356,16 @@ class MainActivity : Activity() {
 
         val top = LinearLayout(this)
         top.orientation = LinearLayout.HORIZONTAL
-        val name = tv(c.emoji + " " + t.merchant, 15f, true)
+        val name = tv(c.emoji + " " + t.displayName(), 15f, true)
         name.maxLines = 1
         top.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(tv(inr(t.amt), 15f, true))
+        val amtView = tv(inr(t.amt), 15f, true, if (t.kind == "skip") mute else ink)
+        if (t.kind == "skip") amtView.paintFlags = amtView.paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
+        top.addView(amtView)
         box.addView(top)
-        box.addView(tv(srcLabel(t.src), 11f, false, mute))
+        val time = SimpleDateFormat("h:mm a", Locale("en", "IN")).format(Date(t.ts))
+        val info = listOf(time, t.bank.ifBlank { "" }, srcLabel(t.src)).filter { it.isNotBlank() }.joinToString("  ·  ")
+        box.addView(tv(info + if (t.kind == "skip") "  ·  not counted" else "", 11f, false, mute))
 
         val bottom = LinearLayout(this)
         bottom.orientation = LinearLayout.HORIZONTAL
@@ -382,7 +428,7 @@ class MainActivity : Activity() {
         val c = card()
         val end = startOfDay(System.currentTimeMillis()) + DAY_MS
         val start = end - 7 * DAY_MS
-        val tx = Store.snapTxns().filter { it.ts in start until end }
+        val tx = Store.snapTxns().filter { it.ts in start until end && it.kind != "skip" }
         val sv = Store.savings.filter { it.ts in start until end }
         val total = tx.sumOf { it.amt }
         val waste = tx.filter { it.kind == "waste" }.sumOf { it.amt }
@@ -589,17 +635,9 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Allow SMS permission first", Toast.LENGTH_LONG).show()
             return
         }
-        val moneyRx = Regex("(?:rs\\.?|inr|₹)\\s*[:\\-]?\\s*[0-9]", RegexOption.IGNORE_CASE)
-        val outHints = listOf("debit", "sent", "paid", "dr.", "dr ", "trf", "transfer", "withdraw", "spent", "txn", "transaction", "upi", "imps", "neft")
-        val junk = listOf(
-            "recharge", "validity", "plan", "expire", "offer", "click", "http", "www.", "apply", "loan",
-            "cashback", "reward", "discount", "pre-approved", "kyc", "activate", "pack", "data ", "otp", "credited",
-            "declined", "failed", "reversed", "trade confirmation", "trade bal", "bit.ly"
-        )
         var total = 0
         var read = 0
-        var n = 0
-        val out = StringBuilder()
+        val missed = mutableListOf<String>()
         try {
             val cur = contentResolver.query(
                 Uri.parse("content://sms/inbox"),
@@ -611,87 +649,36 @@ class MainActivity : Activity() {
                     total++
                     val addr = it.getString(0) ?: ""
                     val body = it.getString(1) ?: continue
-                    if (SmsParser.parse(addr, body, it.getLong(2)) != null) {
-                        read++
-                        continue
-                    }
-                    if (n >= 12) continue
-                    val low = body.lowercase()
-                    if (!moneyRx.containsMatchIn(body)) continue
-                    if (outHints.none { h -> low.contains(h) }) continue
-                    // skip recharge reminders / offers / OTPs / credits unless they clearly show money going out
-                    if (junk.any { j -> low.contains(j) } && !low.contains("debited")) continue
-                    n++
-                    out.append("• ").append(addr).append(": ").append(body.replace('\n', ' ').take(170)).append("\n\n")
+                    val p = Parser.parseSms(addr, body, it.getLong(2))
+                    if (p.txn != null) { read++; continue }
+                    if (missed.size >= 15 || !Parser.mentionsMoney(body)) continue
+                    // Only list messages that could be a payment we missed; obvious non-payments are left out.
+                    if (p.reason.startsWith("OTP") || p.reason.startsWith("promotional") || p.reason.startsWith("money received") ||
+                        p.reason.startsWith("not completed") || p.reason.startsWith("reminder")) continue
+                    val date = SimpleDateFormat("d MMM h:mm a", Locale("en", "IN")).format(Date(it.getLong(2)))
+                    missed += "• $addr ($date) [${p.reason}]: " + body.replace('\n', ' ').take(200)
                 }
             }
         } catch (e: Exception) {
-            out.append("Could not read SMS: ").append(e.message)
+            missed += "Could not read SMS: " + e.message
         }
-        val head = "Found $total SMS in the last 90 days; $read were read as expenses.\n" +
-            (if (total == 0) "The app cannot see the inbox. Check SMS permission (and 'Allow restricted settings') in Settings.\n" else "") +
-            "\n"
-        val tail = if (n == 0 && out.isEmpty()) "No missed SMS that look like money going out." else "These SMS look like debits but were not read:\n\n$out"
-        AlertDialog.Builder(this)
+        val head = "Last 90 days: $total SMS, $read read as payments.\n" +
+            (if (total == 0) "The app cannot see the inbox. Check SMS permission (and 'Allow restricted settings') in Settings.\n" else "")
+        val body = if (missed.isEmpty()) "No missed SMS that look like payments." else
+            "These mention money but were not counted. If one is a real payment, tap Copy and send it to Claude:\n\n" + missed.joinToString("\n\n")
+        val text = head + "\n" + body
+        val dlg = AlertDialog.Builder(this)
             .setTitle("SMS check")
-            .setMessage(head + tail)
+            .setMessage(text)
             .setPositiveButton("OK", null)
-            .show()
-    }
-
-    // ---------- export ----------
-    private var pendingExport: ByteArray? = null
-
-    private fun exportDialog() {
-        val ps = Report.periods()
-        AlertDialog.Builder(this).setTitle("Report period")
-            .setItems(ps.map { it.label }.toTypedArray()) { _, i ->
-                val p = ps[i]
-                AlertDialog.Builder(this).setTitle("Format")
-                    .setItems(arrayOf("Excel (.xlsx)", "PDF")) { _, f -> export(p, f == 0) }
-                    .show()
-            }.show()
-    }
-
-    private fun export(p: Period, excel: Boolean) {
-        val bytes = try {
-            if (excel) Report.xlsx(p) else Report.pdf(p)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not create report: " + e.message, Toast.LENGTH_LONG).show()
-            return
+        if (missed.isNotEmpty()) dlg.setNeutralButton("Copy") { _, _ ->
+            try {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("SMS check", text))
+                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) { }
         }
-        pendingExport = bytes
-        val stamp = SimpleDateFormat("yyyy-MM-dd", Locale("en", "IN")).format(Date())
-        val slug = p.label.substringBefore(" (").lowercase().replace(" ", "-")
-        val i = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT)
-        i.addCategory(android.content.Intent.CATEGORY_OPENABLE)
-        i.type = if (excel) "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" else "application/pdf"
-        i.putExtra(android.content.Intent.EXTRA_TITLE, "expenses-$slug-$stamp." + if (excel) "xlsx" else "pdf")
-        try {
-            startActivityForResult(i, 42)
-        } catch (e: Exception) {
-            Toast.makeText(this, "No file picker found on this phone", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 42) return
-        val bytes = pendingExport
-        pendingExport = null
-        val uri = data?.data
-        if (resultCode != RESULT_OK || uri == null || bytes == null) return
-        try {
-            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-            Toast.makeText(this, "Report saved ✔", Toast.LENGTH_LONG).show()
-            val v = android.content.Intent(android.content.Intent.ACTION_VIEW)
-            v.setDataAndType(uri, contentResolver.getType(uri))
-            v.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            try { startActivity(v) } catch (e: Exception) { }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not save: " + e.message, Toast.LENGTH_LONG).show()
-        }
+        dlg.show()
     }
 
     // ---------- dialogs ----------
