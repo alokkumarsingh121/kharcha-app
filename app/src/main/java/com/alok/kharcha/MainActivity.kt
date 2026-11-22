@@ -218,7 +218,8 @@ class MainActivity : Activity() {
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.BOTTOM
         head.addView(tv("💸 Daily Expenses", 22f, true), LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(tv("v3.0", 11f, false, mute))
+        val ver = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+        head.addView(tv("v$ver", 11f, false, mute))
         root.addView(head)
         root.addView(tv(
             if (hasSmsPermission()) "Bank SMS are read automatically and stay on this phone."

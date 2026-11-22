@@ -26,13 +26,28 @@ jobs:
       - name: Parser tests (real bank SMS / mail formats)
         run: gradle testDebugUnitTest --no-daemon
 
-      - name: Build debug APK
+      - name: Signing key
+        env:
+          KS_B64: ${{ secrets.KS_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            printf '%s' "$KS_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/kharcha.jks"
+            echo "KS_FILE=$RUNNER_TEMP/kharcha.jks" >> "$GITHUB_ENV"
+            echo "SIGNED=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::KS_B64 secret is missing, so this APK is not published (it would need an uninstall)."
+          fi
+
+      - name: Build APK
+        env:
+          KS_PASS: ${{ secrets.KS_PASS }}
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk kharcha.apk
 
       - name: Publish release
+        if: env.SIGNED == '1'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
