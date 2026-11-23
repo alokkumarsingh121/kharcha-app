@@ -221,6 +221,41 @@ object ParserCases {
         if (Parser.modeOf(smsCases[0].body, "Union Bank") != "") fails += "MODE union 'by MB' should stay blank"
         if (Parser.modeOf("Rs.2000.00 withdrawn at ATM S1ANVA12 from A/c XX1234") != "ATM") fails += "MODE atm"
 
+        // ---- ICICI card "debited for INR .. for UPI-ref-NAME. To dispute, call .." (SMS and mail) ----
+        val fkSms = "ICICI Bank Credit Card XX7006 debited for INR 670.00 on 23-Nov-26 for UPI-632732320515-Flipkart. To dispute, call 18002662 or SMS BLOCK 7006 to 9215676766"
+        val fkMail = "ICICI Bank Online | Dear Customer, ICICI Bank Credit Card XX7006 debited for INR 670.00 on 23-Nov-26 for UPI-632732320515-Flipkart. To dispute, call 18002662 or SMS BLOCK 7006 to 9215676766. " +
+            "Sincerely, Team ICICI Bank | This is an auto-generated e-mail. Discover a new way of paying your Credit Card bills from your bank account anytime anywhere by using ICICI Bank iMobile Pay."
+        val fkRecv = ist(2026, 11, 23, 12, 6, 30)
+        val f1 = Parser.parseSms("AX-ICICIT-T", fkSms, fkRecv).txn
+        val f2 = Parser.parseMail("credit_cards@icici.bank.in", "Transaction alert for your ICICI Bank Credit Card", fkMail, fkRecv, "fk1").txn
+        for ((nm, f) in listOf("sms" to f1, "mail" to f2)) {
+            if (f == null) { fails += "FLIPKART $nm not read"; continue }
+            if (f.merchant != "Flipkart") fails += "FLIPKART $nm payee '${f.merchant}'"
+            if (f.cat != "shop" || f.kind == "skip") fails += "FLIPKART $nm cat/kind ${f.cat}/${f.kind} (a card purchase must count as spending)"
+            if (f.ref != "632732320515" || f.acct != "7006") fails += "FLIPKART $nm ref/acct ${f.ref}/${f.acct}"
+        }
+        if (f1 != null && f2 != null && Dedup.find(listOf(f1), f2) == null) fails += "FLIPKART sms and mail should merge"
+        // a real card-bill payment is still "not spending" - also from a mail that has a footer
+        val billSms = Parser.parseSms("AX-UNIONB-S", "Union Bank of India A/c *4821 Dr Rs 5000.00 on 23-11-26 10:15 towards Credit Card Bill payment UPI Ref 411111111111", ist(2026, 11, 23, 10, 15, 20)).txn
+        if (billSms == null || billSms.kind != "skip") fails += "CARD BILL payment must stay 'not spending': ${billSms?.kind}"
+        // advice words are never a payee
+        for (junk in listOf("To dispute, call 18002662", "to report it please call 1800")) {
+            val j = Parser.parseSms("AX-UNIONB-S", "Union Bank of India A/c *4821 Dr Rs 99.00 on 23-11-26 10:15 UPI Ref 411111111112. $junk", ist(2026, 11, 23, 10, 15, 20)).txn
+            val nm = j?.merchant?.lowercase() ?: ""
+            if (nm.startsWith("disp") || nm.startsWith("repo")) fails += "JUNK payee '${j?.merchant}'"
+        }
+
+        // entries saved by the earlier version with the wrong name / "Not spending" are read again from their kept text
+        val bad = Txn("email:fix1", fkRecv, 670.0, "dispute", "notspend", "skip", "email+sms", false, "632732320515", "7006", "ICICI Card")
+        bad.msgs.addAll(listOf(f2!!.msgs[0], f1!!.msgs[0]))
+        if (!Parser.repair(bad) || bad.merchant != "Flipkart" || bad.cat != "shop" || bad.kind == "skip") fails += "REPAIR dispute entry: ${bad.merchant}/${bad.cat}/${bad.kind}"
+        val byHand = Txn("email:fix2", fkRecv, 670.0, "dispute", "other", "need", "email+sms", true, "632732320515", "7006", "ICICI Card")
+        byHand.msgs.add(f1.msgs[0])
+        if (Parser.repair(byHand) || byHand.merchant != "dispute") fails += "REPAIR must not touch entries the person confirmed"
+        val cred = Txn("sms:fix3", fkRecv, 5000.0, "CRED", "notspend", "skip", "sms", false, "411111111111", "4821", "Union Bank")
+        cred.msgs.add(billSms!!.msgs[0])
+        if (Parser.repair(cred) || cred.kind != "skip") fails += "REPAIR must keep a real card-bill entry as 'not spending'"
+
         // ---- day boundaries: 11:59 PM stays on its own day ----
         val late = Parser.txnTime("Dr Rs44.00 on 21-11-26 23:59 by MB 1", ist(2026, 11, 21, 23, 59, 30))
         if (late != ist(2026, 11, 21, 23, 59)) fails += "TIME 23:59 read as $late"

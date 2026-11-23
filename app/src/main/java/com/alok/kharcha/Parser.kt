@@ -80,9 +80,12 @@ object Parser {
         Regex(";\\s*([A-Za-z0-9 .&@_-]{2,40}?)\\s+credited\\b", I),                                                        // ICICI savings
         Regex("\\bcredited to\\s+(?:VPA\\s+|A/c\\s+)?([A-Za-z][A-Za-z0-9.&@_ -]{1,40}?)(?:\\s*\\(|\\.\\s|\\.$|\\s+$STOP\\b|$)", I),
         Regex("\\bCr\\.?\\s+to\\s+([A-Za-z][A-Za-z0-9.&@_ -]{1,40}?)(?:\\.\\s|\\.$|\\s*\\(|\\s+$STOP\\b|$)", I),
-        Regex("\\b(?:trf to|paid to|sent to|transfer to|to|towards|at)\\s+(?:VPA\\s+)?(?!(?:rs|inr|your|a/c|ac|account|upi)\\b)([A-Za-z][A-Za-z0-9.&@_ -]{1,40}?)(?:\\s*\\(|\\.\\s|\\.$|,|\\s+$STOP\\b|$)", I),
-        Regex("UPI-[0-9]{6,}-([A-Za-z][A-Za-z0-9 &_-]{1,30})", I)
+        Regex("UPI-[0-9]{6,}-([A-Za-z][A-Za-z0-9 &_-]{1,30})", I),                                                       // ICICI card: "for UPI-ref-NAME."
+        Regex("\\b(?:trf to|paid to|sent to|transfer to|to|towards|at)\\s+(?:VPA\\s+)?(?!(?:rs|inr|your|a/c|ac|account|upi)\\b)([A-Za-z][A-Za-z0-9.&@_ -]{1,40}?)(?:\\s*\\(|\\.\\s|\\.$|,|\\s+$STOP\\b|$)", I)
     )
+
+    /** Words from the bank's own advice lines ("To dispute, call 1800…", "to report it please call") that are never a payee. */
+    private val notPayee = Regex("^(?:dispute|report|block|call|sms|you|your|know|click|enable)\\b", I)
 
     private fun pickPayee(t: String): String {
         for (rx in payeeRx) {
@@ -93,6 +96,7 @@ object Parser {
             if (clean.length < 2) continue
             if (clean.all { it.isDigit() || it == ' ' || it == '-' }) continue   // "Fv.86012": number, not a name
             if (Regex("^(?:atm|xx|card|bank)$", I).matches(clean)) continue
+            if (notPayee.containsMatchIn(clean)) continue                     // "To dispute, call…", "to report it"
             return if (clean.length > 30) clean.substring(0, 30).trim() else clean
         }
         return ""
@@ -232,10 +236,16 @@ object Parser {
         return Cats.of(id)
     }
 
+    /** The message without its sign-off and footer ("Sincerely…", "Discover a new way of paying your Credit Card bills…"). */
+    private fun beforeFooter(text: String): String {
+        val i = mailStop.find(text)?.range?.first ?: return text
+        return if (i >= 60) text.substring(0, i) else text
+    }
+
     private fun finish(id: String, ts: Long, amt: Double, payee: String, src: String, ref: String, acct: String, bank: String, text: String): Txn {
         var cat = guessCat(payee)
         var kind = cat.kind
-        if (cardBillRx.containsMatchIn(payee) || Regex("credit\\s*card\\s*bill|cc bill payment", I).containsMatchIn(text) || isOwnName(payee)) {
+        if (cardBillRx.containsMatchIn(payee) || Regex("credit\\s*card\\s*bill|cc bill payment", I).containsMatchIn(beforeFooter(text)) || isOwnName(payee)) {
             cat = Cats.of("notspend"); kind = "skip"
         }
         return Txn(id, ts, amt, payee, cat.id, kind, src, false, ref, acct, bank)
@@ -250,6 +260,29 @@ object Parser {
         val p = parseText(sender, norm(body), received, "sms", id)
         p.txn?.msgs?.add(Msg(id, "sms", sender, received, "", smsText(body)))
         return p
+    }
+
+    /**
+     * Entries saved by an older app version with a wrong payee ("dispute") or wrongly marked "Not spending":
+     * read again from the message text kept with them. Entries the person changed by hand are never touched.
+     * Returns true if the entry changed.
+     */
+    fun repair(t: Txn): Boolean {
+        if (t.confirmed || t.deleted || t.src == "manual" || t.msgs.isEmpty()) return false
+        val badName = notPayee.containsMatchIn(t.merchant)
+        if (!badName && t.kind != "skip") return false
+        for (m in t.msgs.sortedBy { if (it.src == "sms") 0 else 1 }) {
+            val p = (if (m.src == "sms") parseSms(m.from, m.text, m.ts) else parseMail(m.from, m.subject, m.text, m.ts, m.key)).txn ?: continue
+            if (Math.abs(p.amt - t.amt) > 0.01) continue
+            val nameOk = !badName || (p.merchant.isNotBlank() && !notPayee.containsMatchIn(p.merchant))
+            val kindFix = t.kind == "skip" && p.kind != "skip"
+            if (!nameOk || (!badName && !kindFix)) continue
+            if (badName) t.merchant = p.merchant
+            t.cat = p.cat
+            t.kind = p.kind
+            return true
+        }
+        return false
     }
 
     // ---------------- original message text, kept to show with each entry ----------------

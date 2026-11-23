@@ -35,6 +35,9 @@ object Store {
             if (ready) return
             sp = ctx.getSharedPreferences("kharcha", Context.MODE_PRIVATE)
             load()
+            var fixed = false
+            for (t in txns) if (Parser.repair(t)) fixed = true
+            if (fixed) saveNow()
             ready = true
         }
     }
